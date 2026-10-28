@@ -16,5 +16,10 @@
        vendors, so this is required. Every host DAW (Logic, Reaper, Ableton) carries it. -->
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
+  <!-- Plugin hosting: PACE/iLok-protected plugins (Soundtoys, Harrison, Eiosis, SSL, ...) decrypt
+       their code into memory as they load. Without this the hardened runtime kills the process
+       ("Code Signature Invalid", Invalid Page) the moment that code runs. Ableton Live carries it too. -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
 </dict>
 </plist>
