@@ -7,7 +7,7 @@
   </a>
 </p>
 
-<h1 align="center">SoundCraft</h1>
+<h1 align="center">brotools is a fork of SoundCraft</h1>
 
 <p align="center">
   <b>Recording, editing and mixing audio; an open-source, clean-room reimplementation of Avid Pro Tools, rebuilt in pure Rust.</b>
