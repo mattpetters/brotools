@@ -2,10 +2,12 @@
 
 use crate::Backend;
 use serde_json::{Value, json};
+use soundcraft_audio_io::FileFormat;
 use std::io::{BufRead, Write};
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 const SUPPORTED: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+const MAX_BATCH_CALLS: usize = 1000;
 
 const INSTRUCTIONS: &str = "SoundCraft is a digital audio workstation (Pro Tools-class). Everything a user can do is a \
 command: call `list_commands` to discover ids and their params, then `execute` (or `batch`). Positions are samples \
@@ -37,8 +39,8 @@ pub fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "batch",
-            "Run several commands in order; stops at the first error unless keep_going.",
-            json!({"calls": {"type": "array", "items": {"type": "object", "properties": {"command": {"type": "string"}, "params": {"type": "object"}}}}, "keep_going": {"type": "boolean"}}),
+            "Run up to 1000 commands in order; stops at the first error unless keep_going. Larger batches are rejected before any command runs.",
+            json!({"calls": {"type": "array", "maxItems": MAX_BATCH_CALLS, "items": {"type": "object", "properties": {"command": {"type": "string"}, "params": {"type": "object"}}}}, "keep_going": {"type": "boolean"}}),
             &["calls"],
         ),
         tool(
@@ -69,7 +71,7 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "bounce_mix",
             "Render the mix to an audio file. Returns peak dBFS and integrated LUFS.",
-            json!({"path": {"type": "string"}, "format": {"type": "string", "enum": ["wav", "aiff", "flac"]}, "bit_depth": {"type": "string"}, "start": {}, "end": {}, "normalize": {"type": "boolean"}}),
+            json!({"path": {"type": "string"}, "format": {"type": "string", "enum": FileFormat::writable_extensions()}, "bit_depth": {"type": "string"}, "start": {}, "end": {}, "normalize": {"type": "boolean"}}),
             &["path"],
         ),
         tool("parity", "Feature-parity report against the incumbent's menu catalog.", json!({}), &[]),
@@ -135,9 +137,12 @@ impl<B: Backend> Server<B> {
                 let Some(calls) = args.get("calls").and_then(Value::as_array) else {
                     return error_result("`calls` must be an array");
                 };
+                if calls.len() > MAX_BATCH_CALLS {
+                    return error_result(&format!("`calls` must contain at most {MAX_BATCH_CALLS} commands; no commands were executed"));
+                }
                 let mut out = Vec::new();
                 let mut failed = false;
-                for c in calls.iter().take(1000) {
+                for c in calls {
                     let Some(cmd) = c.get("command").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) else {
                         out.push(json!({"command": "", "ok": false, "error": "`command` required"}));
                         failed = true;

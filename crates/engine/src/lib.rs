@@ -5,12 +5,14 @@
 //! The engine owns the [`Session`] behind an `Arc` (copy-on-write), so undo snapshots are cheap.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod autosave;
 pub mod catalog;
 pub mod catalog_more;
 pub mod clip_group_file;
 pub mod cmd;
 pub mod demo;
 pub mod edit;
+pub mod file_access;
 pub mod inspect;
 pub mod io;
 pub mod score;
@@ -29,6 +31,22 @@ pub use soundcraft_model as model;
 /// plugin that has been used can crash when its module exit only runs from an exit handler.
 pub fn shutdown_plugin_hosts() {
     soundcraft_vst3_host::shutdown();
+}
+
+/// A new [`soundcraft_model::AutoName::id`] for a scheme in `s`: a hash of a counter, never 0 and
+/// not held by another scheme in `s`. Native builds seed the hash from the system, so each run of
+/// the app gives other ids.
+pub fn new_scheme_id(s: &Session) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    loop {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let id = h.finish();
+        if id != 0 && !s.auto_names.values().any(|a| a.id == id) {
+            return id;
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -88,6 +106,53 @@ pub struct Clipboard {
     pub clip_effects: Vec<(String, f64)>,
     /// Markers inside the copied range (starts relative to it), for Paste Special › Merge Markers.
     pub markers: Vec<soundcraft_model::MemoryLocation>,
+    /// How far the copied range started after a grid line; Relative Grid pastes keep it.
+    pub grid_offset: Samples,
+    /// Copy Special › Automation: pasting it leaves the clips alone, in Shuffle mode too.
+    pub automation_only: bool,
+    /// The Auto Rename schemes of the copied clips, keyed as in their `auto_name`.
+    pub auto_names: std::collections::BTreeMap<u64, soundcraft_model::AutoName>,
+}
+
+impl Clipboard {
+    /// An empty clipboard for material copied from `range`.
+    pub fn of_range(s: &Session, range: soundcraft_time::Range) -> Clipboard {
+        let line = s.edit.grid.line_at_or_before(range.start, s.sample_rate, &s.tempo, s.frame_rate);
+        Clipboard { length: range.len(), grid_offset: range.start.saturating_sub(line), ..Clipboard::default() }
+    }
+
+    /// Keep a copy of the Auto Rename schemes that the copied clips use, as `s` holds them.
+    pub fn keep_auto_names(&mut self, s: &Session) {
+        self.auto_names = self.tracks.iter().flatten().filter_map(|c| c.auto_name).filter_map(|k| Some((k, s.auto_names.get(&k)?.clone()))).collect();
+    }
+
+    /// Before a paste into `s`: point the copied clips at schemes that `s` holds. A scheme that `s`
+    /// holds with the same [`AutoName::id`](soundcraft_model::AutoName::id), name, zeros and suffix
+    /// is used as it is, and its numbers count on. Any other goes into `s` under a new key, counting
+    /// on from where it was when it was copied.
+    pub fn adopt_auto_names(&mut self, s: &mut Session) {
+        let mut keys = std::collections::BTreeMap::new();
+        for (k, a) in &self.auto_names {
+            let held = s
+                .auto_names
+                .iter()
+                .find(|(_, h)| a.id != 0 && h.id == a.id && h.name == a.name && h.zeros == a.zeros && h.suffix == a.suffix)
+                .map(|(key, _)| *key);
+            let key = match held {
+                Some(key) => key,
+                None => {
+                    let key = s.alloc();
+                    s.auto_names.insert(key, a.clone());
+                    key
+                }
+            };
+            keys.insert(*k, key);
+        }
+        for c in self.tracks.iter_mut().flatten() {
+            c.auto_name = c.auto_name.and_then(|k| keys.get(&k).copied());
+        }
+        self.auto_names = keys.values().filter_map(|k| Some((*k, s.auto_names.get(k)?.clone()))).collect();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +160,9 @@ struct HistoryEntry {
     label: String,
     doc: Arc<Session>,
 }
+
+/// Most decoded imports [`Engine::offer_import`] holds at once (each can be gigabytes).
+const MAX_OFFERED_IMPORTS: usize = 4;
 
 /// Engine state: the document, history, clipboard and transport plumbing.
 pub struct Engine {
@@ -118,8 +186,15 @@ pub struct Engine {
     dirty_at: Cell<(u64, bool)>,
     /// Gesture key for undo coalescing (see `execute_merged`).
     merge_key: Option<String>,
+    /// The key every merged gesture takes while held (see `hold_merge`).
+    merge_hold: Option<String>,
     /// Messages for the UI status line / agents.
     pub messages: Vec<String>,
+    /// The edit selection (range, tracks) before the last change, for Restore Last Selection.
+    /// Kept out of the document so selecting never marks the session modified.
+    pub last_selection: Option<(soundcraft_time::Range, Vec<TrackId>)>,
+    /// Audio decoded off the UI thread, waiting for its `file.import_audio` (see `offer_import`).
+    imports: Vec<io::DecodedImport>,
 }
 
 impl Default for Engine {
@@ -147,8 +222,34 @@ impl Engine {
             dirty: false,
             dirty_at: Cell::new((0, false)),
             merge_key: None,
+            merge_hold: None,
             messages: Vec::new(),
+            last_selection: None,
+            imports: Vec::new(),
         }
+    }
+
+    /// Hands over audio [`io::decode_import`] made off the UI thread: the next `file.import_audio`
+    /// of the same file at the session's rate places it instead of reading the file again. The
+    /// command still checks the path may be read. Only the few newest are kept.
+    pub fn offer_import(&mut self, d: io::DecodedImport) {
+        self.imports.retain(|x| x.key != d.key);
+        self.imports.push(d);
+        let extra = self.imports.len().saturating_sub(MAX_OFFERED_IMPORTS);
+        self.imports.drain(..extra);
+    }
+
+    /// Drops audio offered for imports that never ran (the command failed or was not sent).
+    pub fn drop_offered_imports(&mut self) {
+        self.imports.clear();
+    }
+
+    /// The offered audio of the file at `path`, if it was decoded for the session's current rate.
+    pub(crate) fn take_import(&mut self, path: &std::path::Path) -> Option<io::DecodedImport> {
+        let key = io::file_key(path);
+        let rate = self.session().sample_rate.hz();
+        let i = self.imports.iter().position(|d| d.key == key && d.rate == rate)?;
+        Some(self.imports.remove(i))
     }
 
     pub fn session(&self) -> &Session {
@@ -181,6 +282,7 @@ impl Engine {
         self.saved = Arc::clone(&self.doc);
         self.undo.clear();
         self.redo.clear();
+        self.last_selection = None;
         self.revision = self.revision.wrapping_add(1);
         self.dirty = false;
     }
@@ -223,6 +325,7 @@ impl Engine {
     pub fn undo(&mut self) -> bool {
         let Some(h) = self.undo.pop() else { return false };
         let cur = std::mem::replace(&mut self.doc, h.doc);
+        self.keep_edit_mode(&cur);
         self.redo.push(HistoryEntry { label: h.label, doc: cur });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
@@ -232,10 +335,25 @@ impl Engine {
     pub fn redo(&mut self) -> bool {
         let Some(h) = self.redo.pop() else { return false };
         let cur = std::mem::replace(&mut self.doc, h.doc);
+        self.keep_edit_mode(&cur);
         self.undo.push(HistoryEntry { label: h.label, doc: cur });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         true
+    }
+
+    /// Undo and Redo never change the Edit mode or its settings (Shuffle Lock above all).
+    fn keep_edit_mode(&mut self, from: &Session) {
+        use edit::{RELATIVE_GRID, SHUFFLE_LOCK, SNAP_TO_GRID};
+        let flags = [SNAP_TO_GRID, SHUFFLE_LOCK, RELATIVE_GRID];
+        let ed = &self.doc.edit;
+        if ed.edit_mode != from.edit.edit_mode || flags.iter().any(|f| ed.flag(f) != from.edit.flag(f)) {
+            let ed = &mut Arc::make_mut(&mut self.doc).edit;
+            ed.edit_mode = from.edit.edit_mode;
+            for f in flags {
+                ed.set_flag(f, from.edit.flag(f));
+            }
+        }
     }
 
     /// Record an undo point manually (for interactive gestures committed by the UI).
@@ -251,10 +369,19 @@ impl Engine {
         }
     }
 
+    /// Whether command `id` must wait for the take being recorded: nothing may replace the
+    /// session or quit under it.
+    pub fn blocked_while_recording(&self, id: &str) -> bool {
+        self.transport.recording && matches!(id, "session.new" | "session.open" | "session.close" | "session.revert" | "app.quit")
+    }
+
     /// Run a command by id. Never panics: escaped panics become `EngineError::Internal` and the
     /// document is restored.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        if self.blocked_while_recording(id) {
+            return Err(EngineError::Disabled(id.to_string(), "stop recording first".into()));
+        }
         if let Err(reason) = (spec.enabled)(self) {
             // A call that names its targets (tracks, clips, a range) does not need a selection;
             // the command itself validates them.
@@ -266,10 +393,10 @@ impl Engine {
         if spec.view {
             return self.execute_view(spec, params);
         }
-        self.merge_key = None;
         let before = Arc::clone(&self.doc);
         let rev = self.revision;
         let dirty = self.dirty;
+        let side_effects = (self.clipboard.clone(), self.messages.clone(), self.transport_requests.clone(), self.last_selection.clone());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, params)));
         let result = match result {
             Ok(r) => r,
@@ -277,11 +404,17 @@ impl Engine {
                 self.doc = before;
                 self.revision = rev.wrapping_add(1);
                 self.dirty = dirty;
+                (self.clipboard, self.messages, self.transport_requests, self.last_selection) = side_effects;
                 return Err(EngineError::Internal(id.to_string(), panic_message(&*p)));
             }
         };
+        if !Arc::ptr_eq(&before, &self.doc) {
+            // Only a change to the document ends a gesture, so Stop doesn't split the pass it ends.
+            self.merge_key = None;
+        }
         match result {
             Ok(v) => {
+                cmd::remember_selection(self, &before);
                 if spec.undoable && !Arc::ptr_eq(&before, &self.doc) {
                     self.push_undo(spec.label, before);
                 }
@@ -315,15 +448,37 @@ impl Engine {
     /// Execute as part of a continuous gesture (fader drag, knob turn, slider): consecutive calls
     /// with the same `key` collapse into a single undo step.
     pub fn execute_merged(&mut self, id: &str, params: &Value, key: &str) -> Result<Value> {
-        let continuing = self.merge_key.as_deref() == Some(key);
+        let key = self.merge_hold.clone().unwrap_or_else(|| key.to_string());
+        let continuing = self.merge_key.as_ref() == Some(&key);
         let before_len = self.undo.len();
-        let r = self.execute(id, params)?;
+        // The step pushed for a continuing tick is dropped again below, so it must not trim the
+        // oldest entry first when the history is full.
+        let limit = self.history_limit;
+        if continuing && before_len > 0 {
+            self.history_limit = limit.max(before_len.saturating_add(1));
+        }
+        let r = self.execute(id, params);
+        self.history_limit = limit;
+        let r = r?;
         if continuing && self.undo.len() == before_len + 1 && before_len > 0 {
             // Drop the step just pushed; the earlier one still holds the pre-gesture document.
             self.undo.pop();
         }
-        self.merge_key = Some(key.to_string());
+        self.merge_key = Some(key);
         Ok(r)
+    }
+
+    /// While `key` is held, every `execute_merged` gesture takes it instead of its own, so they
+    /// all join one undo step (an automation pass and whatever is dragged during it).
+    pub fn hold_merge(&mut self, key: Option<&str>) {
+        if self.merge_hold.as_deref() != key {
+            self.merge_hold = key.map(str::to_string);
+        }
+    }
+
+    /// The gesture `execute_merged` is continuing, if any.
+    pub fn merge_key(&self) -> Option<&str> {
+        self.merge_key.as_deref()
     }
 
     /// End a gesture started with `execute_merged`.
@@ -374,14 +529,14 @@ fn install_panic_hook() {
     ONCE.call_once(|| {
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            log::error!("panic: {info}");
+            log::error!("panic: {info}\n{}", std::backtrace::Backtrace::force_capture());
             prev(info);
         }));
     });
 }
 
 fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
-    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
+    p.downcast_ref::<&str>().map(ToString::to_string).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
 }
 
 #[cfg(test)]
@@ -399,6 +554,34 @@ mod merge_tests {
         assert_eq!(e.undo_history().len(), 1);
         e.undo();
         assert_eq!(e.session().track(t).unwrap().mixer.volume_db, 0.0);
+    }
+
+    #[test]
+    fn a_held_merge_joins_other_gestures_into_its_step() {
+        let mut e = Engine::default();
+        let t = e.session_mut().add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Mono, None);
+        e.hold_merge(Some("pass"));
+        for db in [-1.0, -2.0, -3.0] {
+            e.execute_merged("mix.volume", &json!({"track": t.0, "db": db}), "fader").unwrap();
+            e.execute_merged("mix.pan", &json!({"track": t.0, "pan": db / 4.0}), "pan").unwrap();
+        }
+        assert_eq!(e.undo_history().len(), 1);
+        e.hold_merge(None);
+        e.execute_merged("mix.volume", &json!({"track": t.0, "db": -6.0}), "fader").unwrap();
+        assert_eq!(e.undo_history().len(), 2);
+    }
+
+    #[test]
+    fn only_a_change_to_the_document_ends_a_gesture() {
+        let mut e = Engine::default();
+        let t = e.session_mut().add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Mono, None);
+        e.execute_merged("mix.volume", &json!({"track": t.0, "db": -1.0}), "fader").unwrap();
+        e.execute("transport.stop", &json!({})).unwrap();
+        e.execute_merged("mix.volume", &json!({"track": t.0, "db": -2.0}), "fader").unwrap();
+        assert_eq!(e.undo_history().len(), 1);
+        e.execute("mix.mute", &json!({"track": t.0})).unwrap();
+        e.execute_merged("mix.volume", &json!({"track": t.0, "db": -3.0}), "fader").unwrap();
+        assert_eq!(e.undo_history().len(), 3);
     }
 }
 
@@ -423,5 +606,28 @@ mod dirty_tests {
         assert!(e.is_dirty());
         e.undo();
         assert!(!e.is_dirty());
+    }
+}
+
+#[cfg(test)]
+mod panic_tests {
+    use super::*;
+
+    #[test]
+    fn a_panicking_command_restores_side_effect_state() {
+        let mut e = Engine::default();
+        // Non-default values, so clearing them instead of restoring them would fail.
+        e.clipboard.length = 42;
+        e.messages.push("prior".into());
+        e.transport_requests.push(TransportRequest::Stop);
+        e.last_selection = Some((soundcraft_time::Range::new(20, 30), Vec::new()));
+        let (clipboard, messages, requests, selection) =
+            (e.clipboard.clone(), e.messages.clone(), e.transport_requests.clone(), e.last_selection.clone());
+        let r = e.execute("test.panic_probe", &json!({"panic": true}));
+        assert!(matches!(r, Err(EngineError::Internal(..))));
+        assert_eq!(e.clipboard, clipboard);
+        assert_eq!(e.messages, messages);
+        assert_eq!(e.transport_requests, requests);
+        assert_eq!(e.last_selection, selection);
     }
 }

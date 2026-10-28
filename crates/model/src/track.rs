@@ -84,7 +84,10 @@ impl TrackKind {
 
 /// Track heights (View › Track Height presets).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[serde(from = "TrackHeightRepr")]
 pub enum TrackHeight {
+    /// Any height from Micro to Extreme, in points.
+    Custom(u16),
     Micro,
     Mini,
     Small,
@@ -93,7 +96,53 @@ pub enum TrackHeight {
     Large,
     Jumbo,
     Extreme,
+    /// Fit To Window: this many points.
+    Fit(u16),
+}
+
+/// What a saved track height may look like: the current form, or the bare `"Fit"` string older sessions used.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum TrackHeightRepr {
+    Current(TrackHeightCurrent),
+    LegacyFit(LegacyFit),
+}
+
+#[derive(serde::Deserialize)]
+enum LegacyFit {
     Fit,
+}
+
+/// Mirror of `TrackHeight` that derives the current serialized form.
+#[derive(serde::Deserialize)]
+enum TrackHeightCurrent {
+    Custom(u16),
+    Micro,
+    Mini,
+    Small,
+    Medium,
+    Large,
+    Jumbo,
+    Extreme,
+    Fit(u16),
+}
+
+impl From<TrackHeightRepr> for TrackHeight {
+    fn from(repr: TrackHeightRepr) -> Self {
+        match repr {
+            TrackHeightRepr::Current(TrackHeightCurrent::Custom(p)) => TrackHeight::Custom(p),
+            TrackHeightRepr::Current(TrackHeightCurrent::Micro) => TrackHeight::Micro,
+            TrackHeightRepr::Current(TrackHeightCurrent::Mini) => TrackHeight::Mini,
+            TrackHeightRepr::Current(TrackHeightCurrent::Small) => TrackHeight::Small,
+            TrackHeightRepr::Current(TrackHeightCurrent::Medium) => TrackHeight::Medium,
+            TrackHeightRepr::Current(TrackHeightCurrent::Large) => TrackHeight::Large,
+            TrackHeightRepr::Current(TrackHeightCurrent::Jumbo) => TrackHeight::Jumbo,
+            TrackHeightRepr::Current(TrackHeightCurrent::Extreme) => TrackHeight::Extreme,
+            TrackHeightRepr::Current(TrackHeightCurrent::Fit(p)) => TrackHeight::Fit(p),
+            // Older sessions stored Fit with no size, drawn 88 points tall: the default Medium height.
+            TrackHeightRepr::LegacyFit(LegacyFit::Fit) => TrackHeight::Medium,
+        }
+    }
 }
 
 impl TrackHeight {
@@ -108,6 +157,7 @@ impl TrackHeight {
     ];
     pub fn points(self) -> f32 {
         match self {
+            TrackHeight::Custom(points) => f32::from(points).clamp(TrackHeight::Micro.points(), TrackHeight::Extreme.points()),
             TrackHeight::Micro => 16.0,
             TrackHeight::Mini => 24.0,
             TrackHeight::Small => 46.0,
@@ -115,11 +165,12 @@ impl TrackHeight {
             TrackHeight::Large => 132.0,
             TrackHeight::Jumbo => 220.0,
             TrackHeight::Extreme => 440.0,
-            TrackHeight::Fit => 88.0,
+            TrackHeight::Fit(points) => f32::from(points.max(16)),
         }
     }
     pub fn label(self) -> &'static str {
         match self {
+            TrackHeight::Custom(_) => "custom",
             TrackHeight::Micro => "micro",
             TrackHeight::Mini => "mini",
             TrackHeight::Small => "small",
@@ -127,11 +178,23 @@ impl TrackHeight {
             TrackHeight::Large => "large",
             TrackHeight::Jumbo => "jumbo",
             TrackHeight::Extreme => "extreme",
-            TrackHeight::Fit => "fit to window",
+            TrackHeight::Fit(_) => "fit to window",
         }
     }
     pub fn from_id(s: &str) -> Option<TrackHeight> {
         TrackHeight::ALL.into_iter().find(|h| h.label().eq_ignore_ascii_case(s))
+    }
+    /// The preset this many points tall, else a custom height clamped to Micro..Extreme.
+    pub fn from_points(points: f32) -> TrackHeight {
+        let p = points.max(TrackHeight::Micro.points()).min(TrackHeight::Extreme.points()).round() as u16;
+        TrackHeight::ALL.into_iter().find(|h| h.points() == f32::from(p)).unwrap_or(TrackHeight::Custom(p))
+    }
+    /// The next preset taller (or shorter) than this height; Extreme (or Micro) stays.
+    pub fn step(self, taller: bool) -> TrackHeight {
+        let p = self.points();
+        let next =
+            if taller { TrackHeight::ALL.into_iter().find(|h| h.points() > p) } else { TrackHeight::ALL.into_iter().rev().find(|h| h.points() < p) };
+        next.unwrap_or(self)
     }
 }
 
@@ -312,6 +375,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_fit_string_loads_as_default_height() {
+        assert_eq!(serde_json::from_str::<TrackHeight>("\"Fit\"").unwrap(), TrackHeight::Medium);
+        assert_eq!(serde_json::from_str::<TrackHeight>("{\"Fit\":120}").unwrap(), TrackHeight::Fit(120));
+        assert_eq!(serde_json::to_string(&TrackHeight::Fit(120)).unwrap(), "{\"Fit\":120}");
+        assert_eq!(serde_json::from_str::<TrackHeight>("\"Large\"").unwrap(), TrackHeight::Large);
+        assert_eq!(serde_json::from_str::<TrackHeight>("{\"Custom\":50}").unwrap(), TrackHeight::Custom(50));
+    }
+
+    #[test]
     fn new_track_defaults() {
         let t = Track::new(TrackId(1), "Gtr", TrackKind::Audio, ChannelFormat::Stereo, TRACK_COLORS[0]);
         assert_eq!(t.channels(), 2);
@@ -336,5 +408,21 @@ mod tests {
         for k in TrackKind::ALL {
             assert_eq!(TrackKind::from_id(k.id()), Some(k));
         }
+    }
+
+    #[test]
+    fn custom_heights_round_to_presets_and_step_through_them() {
+        assert_eq!(TrackHeight::from_points(88.0), TrackHeight::Medium);
+        assert_eq!(TrackHeight::from_points(57.4), TrackHeight::Custom(57));
+        assert_eq!(TrackHeight::from_points(9999.0), TrackHeight::Extreme);
+        assert_eq!(TrackHeight::from_points(f32::NAN), TrackHeight::Micro);
+        assert_eq!(TrackHeight::Custom(u16::MAX).points(), 440.0);
+        assert_eq!(TrackHeight::Custom(57).step(true), TrackHeight::Medium);
+        assert_eq!(TrackHeight::Custom(57).step(false), TrackHeight::Small);
+        assert_eq!(TrackHeight::Extreme.step(true), TrackHeight::Extreme);
+        assert_eq!(TrackHeight::Micro.step(false), TrackHeight::Micro);
+        let json = serde_json::to_string(&TrackHeight::Custom(57)).unwrap();
+        assert_eq!(serde_json::from_str::<TrackHeight>(&json).unwrap(), TrackHeight::Custom(57));
+        assert_eq!(serde_json::from_str::<TrackHeight>("\"Large\"").unwrap(), TrackHeight::Large);
     }
 }
