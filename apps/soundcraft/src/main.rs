@@ -184,7 +184,7 @@ fn app_icon() -> Option<egui::IconData> {
 
 fn main() -> eframe::Result {
     // A plugin scan's child process (see `plugin_folders::start`): load one file, answer, exit.
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     if let Some(reply) = soundcraft_ui_egui::plugin_folders::scan_child(&args) {
         use std::io::Write as _;
         let _ = writeln!(std::io::stdout(), "{reply}");

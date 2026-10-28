@@ -108,7 +108,7 @@ pub fn start(dirs: &PluginDirs, settings_dir: Option<&Path>, scanner: Option<Pat
 
 /// The scan child process's work: with `<flag> <file>` arguments (see [`start`]), loads that one
 /// plugin file and returns the line to print; `None` for any other arguments.
-pub fn scan_child(args: &[String]) -> Option<String> {
+pub fn scan_child(args: &[std::ffi::OsString]) -> Option<String> {
     let [flag, file] = args else { return None };
     let file = Path::new(file);
     if flag == soundcraft_vst3_host::SCAN_FLAG {
