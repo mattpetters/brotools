@@ -10,8 +10,8 @@ Assets must be original, public domain (CC0) or permissively licensed. See `AGEN
 
 All UI icons (tools, transport, track buttons) are drawn procedurally in
 `crates/ui-egui/src/icons.rs` by the SoundCraft contributors (MIT OR Apache-2.0). No UI icon image
-files are used. The app icon (`assets/app-icon/`, a singing nightingale drawn as original SVG by
-the SoundCraft contributors) is listed under Files below.
+files are used. The app icon (`assets/app-icon/`, the BroTools "b" wave badge drawn as original SVG by
+the brotools contributors) is listed under Files below.
 
 ## Audio
 
@@ -47,12 +47,12 @@ here. The subset uses default_fonts; the parent face uses monochrome_emoji_fonts
 | `docs/brand/artcraft-mark.png` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
 | `docs/brand/artcraft-mark-black.svg` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
 | `docs/brand/artcraft-mark-black.png` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
-| `assets/app-icon/icon.svg` | SoundCraft contributors | original (hand-placed SVG paths; placeholder app icon) | MIT OR Apache-2.0 |
+| `assets/app-icon/icon.svg` | brotools contributors | original (hand-placed SVG paths; BroTools "b" wave badge) | MIT OR Apache-2.0 |
 | `packaging/macos/dmg/` (all files) | @XusBadia | original (macOS DMG window background and layout, from the app icon; see `packaging/macos/dmg/README.md`) | MIT OR Apache-2.0 |
-| `assets/app-icon/soundcraft-1024.png` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
-| `assets/app-icon/soundcraft-macos-512.png` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
-| `assets/app-icon/soundcraft.icns` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
-| `assets/app-icon/soundcraft.ico` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
-| `assets/app-icon/hicolor/` | SoundCraft contributors | original, rendered from `icon.svg` (16–512 px PNGs and the scalable SVG) | MIT OR Apache-2.0 |
+| `assets/app-icon/soundcraft-1024.png` | brotools contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
+| `assets/app-icon/soundcraft-macos-512.png` | brotools contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
+| `assets/app-icon/soundcraft.icns` | brotools contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
+| `assets/app-icon/soundcraft.ico` | brotools contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
+| `assets/app-icon/hicolor/` | brotools contributors | original, rendered from `icon.svg` (16–512 px PNGs and the scalable SVG) | MIT OR Apache-2.0 |
 | `docs/images/` | SoundCraft contributors | screenshots of SoundCraft rendered from the synthesised demo session | MIT OR Apache-2.0 |
 | `crates/audio-io/tests/fixtures/` | SoundCraft contributors | original test tones and silence generated with ffmpeg (sine) or by hand; commands in `crates/audio-io/tests/fixtures/README.md` | MIT OR Apache-2.0 |
