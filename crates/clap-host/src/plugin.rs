@@ -2,7 +2,7 @@
 
 use crate::ffi::{EVENT_CAP, Event, GuiLink, Instance, NotePort, PortBuffers};
 use clap_sys::ext::note_ports::{CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI};
-use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo};
+use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -33,11 +33,14 @@ pub struct ClapPlugin {
     in_main: Option<usize>,
     out_main: Option<usize>,
     notes: NoteMode,
+    /// The note port takes raw MIDI (controllers, pitch bend, program changes).
+    midi_in: bool,
     held: [bool; 128],
     channels: usize,
     max_block: usize,
     latency: usize,
     steady: i64,
+    transport: Option<Transport>,
 }
 
 impl ClapPlugin {
@@ -55,11 +58,13 @@ impl ClapPlugin {
             in_main: None,
             out_main: None,
             notes: NoteMode::None,
+            midi_in: false,
             held: [false; 128],
             channels: 2,
             max_block: 0,
             latency: 0,
             steady: 0,
+            transport: None,
         }
     }
 
@@ -97,6 +102,35 @@ fn note_mode(p: Option<NotePort>) -> NoteMode {
     }
 }
 
+/// Copy `n` frames from `start` of the host buffers into the plugin's input `port` (mono sources
+/// fill every port channel).
+fn feed_input(inputs: &mut PortBuffers, port: usize, io: &[Vec<f32>], ch: usize, (start, n): (usize, usize)) {
+    for c in 0..inputs.channels(port) {
+        let src = io.get(c.min(ch - 1)).and_then(|s| s.get(start..start + n));
+        if let (Some(src), Some(dst)) = (src, inputs.channel_mut(port, c).and_then(|d| d.get_mut(..n))) {
+            dst.copy_from_slice(src);
+        }
+    }
+}
+
+/// Copy `n` frames of the plugin's output `port` into the host buffers from `start`; a mono host
+/// buffer takes the average of a stereo port.
+fn read_output(outputs: &PortBuffers, port: usize, io: &mut [Vec<f32>], ch: usize, (start, n): (usize, usize)) {
+    let oc = outputs.channels(port);
+    for (c, dst) in io.iter_mut().take(ch).enumerate() {
+        let Some(dst) = dst.get_mut(start..start + n) else { continue };
+        if ch == 1 && oc >= 2 {
+            if let (Some(l), Some(r)) = (outputs.channel(port, 0), outputs.channel(port, 1)) {
+                for ((d, a), b) in dst.iter_mut().zip(l).zip(r) {
+                    *d = 0.5 * (a + b);
+                }
+            }
+        } else if let Some(src) = outputs.channel(port, c.min(oc.saturating_sub(1))).and_then(|s| s.get(..n)) {
+            dst.copy_from_slice(src);
+        }
+    }
+}
+
 impl Plugin for ClapPlugin {
     fn info(&self) -> &'static PluginInfo {
         self.info
@@ -108,13 +142,28 @@ impl Plugin for ClapPlugin {
         self.channels = channels.clamp(1, MAX_CHANNELS);
         self.inst.deactivate();
         self.inst.service_callback();
-        let ins = self.inst.audio_ports(true);
-        let outs = self.inst.audio_ports(false);
+        let ports = self.inst.audio_ports(true).and_then(|ins| Ok((ins, self.inst.audio_ports(false)?)));
+        let (ins, outs) = match ports {
+            Ok(p) => p,
+            Err(e) => {
+                // Unsupported layout: stay inactive (`process` passes audio through untouched).
+                log::warn!("{}: {e}", self.info.id);
+                self.inputs = PortBuffers::new(&[], 0);
+                self.outputs = PortBuffers::new(&[], 0);
+                self.in_main = None;
+                self.out_main = None;
+                self.max_block = 0;
+                self.latency = 0;
+                return;
+            }
+        };
         self.in_main = pick_main(&ins);
         self.out_main = pick_main(&outs);
         self.inputs = PortBuffers::new(&ins.iter().map(|p| p.channels).collect::<Vec<_>>(), mb);
         self.outputs = PortBuffers::new(&outs.iter().map(|p| p.channels).collect::<Vec<_>>(), mb);
-        self.notes = note_mode(self.inst.note_port());
+        let port = self.inst.note_port();
+        self.notes = note_mode(port);
+        self.midi_in = port.is_some_and(|p| p.supported & CLAP_NOTE_DIALECT_MIDI != 0);
         self.max_block = mb;
         self.inst.state().restart.store(false, Ordering::Relaxed);
         match self.inst.activate(sr, 1, u32::try_from(mb).unwrap_or(u32::MAX)) {
@@ -177,34 +226,17 @@ impl Plugin for ClapPlugin {
             let end = u32::try_from(start + n).unwrap_or(u32::MAX);
             // Feed the main input port (mono sources fill every port channel).
             if let Some(p) = self.in_main {
-                for c in 0..self.inputs.channels(p) {
-                    let src = io.get(c.min(ch - 1)).and_then(|s| s.get(start..start + n));
-                    if let (Some(src), Some(dst)) = (src, self.inputs.channel_mut(p, c).and_then(|d| d.get_mut(..n))) {
-                        dst.copy_from_slice(src);
-                    }
-                }
+                feed_input(&mut self.inputs, p, io, ch, (start, n));
             }
             let k = self.queue.iter().position(|e| e.time() >= end).unwrap_or(self.queue.len());
             let offset = u32::try_from(start).unwrap_or(u32::MAX);
             let events = self.queue.get(..k).unwrap_or(&[]);
-            let r = self.inst.process(n, self.steady, &mut self.inputs, &mut self.outputs, events, offset);
+            let r = self.inst.process(n, self.steady, &mut self.inputs, &mut self.outputs, events, offset, self.transport.as_ref());
             self.queue.drain(..k);
             self.steady = self.steady.saturating_add(i64::try_from(n).unwrap_or(0));
             match (r, self.out_main) {
                 (Ok(_), Some(p)) => {
-                    let oc = self.outputs.channels(p);
-                    for (c, dst) in io.iter_mut().take(ch).enumerate() {
-                        let Some(dst) = dst.get_mut(start..start + n) else { continue };
-                        if ch == 1 && oc >= 2 {
-                            if let (Some(l), Some(r)) = (self.outputs.channel(p, 0), self.outputs.channel(p, 1)) {
-                                for ((d, a), b) in dst.iter_mut().zip(l).zip(r) {
-                                    *d = 0.5 * (a + b);
-                                }
-                            }
-                        } else if let Some(src) = self.outputs.channel(p, c.min(oc.saturating_sub(1))).and_then(|s| s.get(..n)) {
-                            dst.copy_from_slice(src);
-                        }
-                    }
+                    read_output(&self.outputs, p, io, ch, (start, n));
                 }
                 (Err(e), _) => log::debug!("{}: {e}", self.info.id),
                 _ => {}
@@ -215,6 +247,10 @@ impl Plugin for ClapPlugin {
 
     fn latency(&self) -> usize {
         self.latency
+    }
+
+    fn set_transport(&mut self, transport: &Transport) {
+        self.transport = Some(*transport);
     }
 
     fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
@@ -248,16 +284,18 @@ impl Plugin for ClapPlugin {
         }
     }
 
+    fn midi(&mut self, offset: usize, msg: [u8; 3]) {
+        if self.midi_in {
+            self.push(Event::Midi { time: u32::try_from(offset).unwrap_or(u32::MAX), data: msg });
+        }
+    }
+
     fn all_notes_off(&mut self) {
         for k in 0..128u8 {
             if self.held.get(k as usize).copied().unwrap_or(false) {
                 self.note_off(0, k);
             }
         }
-    }
-
-    fn save_state(&mut self) -> Option<Vec<u8>> {
-        self.inst.save_state()
     }
 
     fn load_state(&mut self, data: &[u8]) -> bool {
@@ -282,6 +320,11 @@ impl Plugin for ClapPlugin {
     fn editor(&mut self) -> Option<Box<dyn PluginEditor>> {
         let link = self.inst.gui()?;
         Some(Box::new(ClapEditor { link, info: self.info, ids: self.ids.clone() }))
+    }
+
+    fn state_reader(&mut self) -> Option<Box<dyn soundcraft_dsp::PluginStateReader>> {
+        let link = self.inst.state_link()?;
+        Some(Box::new(move || link.save_state()))
     }
 }
 
@@ -309,7 +352,6 @@ impl PluginEditor for ClapEditor {
 
     fn idle(&mut self) -> Vec<(String, f32)> {
         let raw = self.link.idle();
-        let _ = self.link.host().dirty.swap(false, Ordering::Relaxed);
         let mut out: Vec<(String, f32)> = Vec::new();
         for (cid, v) in raw {
             let Some(i) = self.ids.iter().position(|&x| x == cid) else { continue };
@@ -322,5 +364,9 @@ impl PluginEditor for ClapEditor {
             }
         }
         out
+    }
+
+    fn state_changed(&mut self) -> bool {
+        self.link.host().dirty.swap(false, Ordering::Relaxed)
     }
 }

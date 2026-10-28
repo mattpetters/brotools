@@ -1,14 +1,13 @@
 //! More Options toggles, the Setup menu (hardware, playback engine, I/O, timecode, click,
 //! shortcuts, MIDI setup) and File › Import › Session Data.
+use super::{CommandSpec, always, bad, command_specs, i64_or, str_param, track_param, tracks_param};
 
 use super::more_util::{set_text, store_value, text, toggle_flag, values_with_prefix};
-use super::*;
-use crate::cmd;
-use serde_json::json;
-use soundcraft_model::{BusId, ChannelFormat, ClipContent, OutputPath, Route, Session, Source, SourceAudio, SourceId, TrackId, TrackKind};
+use crate::{Engine, EngineError, Result, cmd};
+use serde_json::{Value, json};
+use soundcraft_model::{BusId, ChannelFormat, ClipContent, OutputPath, Route, Session, SourceId, TrackId, TrackKind};
 use soundcraft_time::Timecode;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 
 macro_rules! option {
     ($id:literal, $label:literal, $flag:literal) => {
@@ -147,7 +146,9 @@ fn prepare_dpe(e: &mut Engine, p: &Value) -> Result<Value> {
     let r = soundcraft_time::Range::new(0, end);
     let mut n = 0;
     for t in tracks {
-        if crate::io::consolidate(e, t, r)? {
+        // Each track keeps its own length (its material plus a second), as before.
+        let tr = crate::io::bounded_to_track(e.session(), t, r);
+        if crate::io::consolidate(e, id, t, tr)? {
             n += 1;
         }
     }
@@ -220,6 +221,23 @@ fn io_state(s: &Session) -> Value {
     json!({"busses": s.busses, "outputs": s.outputs})
 }
 
+/// Disconnect every track input, output and send that used bus `bid`.
+fn unroute_bus(s: &mut Session, bid: BusId) {
+    for t in &mut s.tracks {
+        if t.mixer.input == Route::Bus(bid) {
+            t.mixer.input = Route::None;
+        }
+        if t.mixer.output == Route::Bus(bid) {
+            t.mixer.output = Route::None;
+        }
+        for slot in &mut t.mixer.sends {
+            if slot.as_ref().is_some_and(|x| x.target == Route::Bus(bid)) {
+                *slot = None;
+            }
+        }
+    }
+}
+
 fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "setup.io";
     let action = str_param(p, "action").unwrap_or("list");
@@ -251,19 +269,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
         "delete_bus" => {
             let bid: BusId = s.bus_by_name(&name).map(|b| b.id).ok_or_else(|| bad(id, format!("no bus `{name}`")))?;
             s.busses.retain(|b| b.id != bid);
-            for t in &mut s.tracks {
-                if t.mixer.input == Route::Bus(bid) {
-                    t.mixer.input = Route::None;
-                }
-                if t.mixer.output == Route::Bus(bid) {
-                    t.mixer.output = Route::None;
-                }
-                for slot in &mut t.mixer.sends {
-                    if slot.as_ref().is_some_and(|x| x.target == Route::Bus(bid)) {
-                        *slot = None;
-                    }
-                }
-            }
+            unroute_bus(s, bid);
         }
         "create_output" => {
             if s.outputs.iter().any(|o| o.name.eq_ignore_ascii_case(&name)) {
@@ -318,7 +324,7 @@ fn current_feet_frames(e: &mut Engine, p: &Value) -> Result<Value> {
     let at = s.edit.selection.start.max(0);
     let frames_at = s.frame_rate.frames_at(at, s.sample_rate);
     let start = ft * 16 + fr - frames_at;
-    s.edit.values.insert("feet_frames.start".into(), start as f64);
+    s.edit.values.insert(soundcraft_model::FEET_FRAMES_START.into(), start as f64);
     Ok(json!({"feet_frames_start": start}))
 }
 
@@ -401,24 +407,11 @@ fn midi_inputs(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"enabled": enabled}))
 }
 
-/// Decode a source file of another session (paths relative to that session's folder).
-fn load_source(dir: &Path, src: &Source, sr: u32) -> Option<soundcraft_audio_io::AudioBuffer> {
-    let p = if Path::new(&src.path).is_absolute() { PathBuf::from(&src.path) } else { dir.join(&src.path) };
-    let bytes = std::fs::read(&p).ok()?;
-    let (_, mut buf) = soundcraft_audio_io::decode(&bytes, p.extension().and_then(|x| x.to_str())).ok()?;
-    if buf.sample_rate != sr && buf.sample_rate > 0 {
-        buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, sr);
-        buf.sample_rate = sr;
-    }
-    Some(buf)
-}
-
 fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "file.import_session_data";
     let path = str_param(p, "path").filter(|x| !x.trim().is_empty()).ok_or_else(|| bad(id, "`path` required"))?.to_string();
-    let text_v = std::fs::read_to_string(&path).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
+    let text_v = crate::io::read_text(&path)?;
     let other = Session::from_json(&text_v).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
-    let dir = Path::new(&path).parent().map(Path::to_path_buf).unwrap_or_default();
     let names: Option<Vec<String>> =
         p.get("tracks").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect());
     let picked: Vec<soundcraft_model::Track> = match &names {
@@ -441,33 +434,40 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
     needed.sort_by_key(|x| x.0);
     needed.dedup();
     let sr = e.session().sample_rate.hz();
-    let decoded: Vec<(Source, Option<soundcraft_audio_io::AudioBuffer>)> =
-        needed.iter().filter_map(|sid| other.source(*sid).cloned()).map(|src| (src.clone(), load_source(&dir, &src, sr))).collect();
     let s = e.session_mut();
+    let mut files = crate::io::DecodedFiles::new();
     let mut map: std::collections::BTreeMap<u64, SourceId> = Default::default();
     let mut missing = Vec::new();
-    for (src, buf) in decoded {
-        let nid = SourceId(s.alloc());
-        let abs = if Path::new(&src.path).is_absolute() { PathBuf::from(&src.path) } else { dir.join(&src.path) };
+    for src in needed.iter().filter_map(|sid| other.source(*sid)) {
         let mut ns = src.clone();
-        ns.id = nid;
-        ns.path = abs.to_string_lossy().into_owned();
-        match buf {
-            Some(b) => {
-                ns.frames = b.frames() as u64;
-                ns.sample_rate = sr;
-                ns.unsaved = true;
-                s.pool.insert(nid, Arc::new(SourceAudio::new(b)));
+        ns.id = SourceId(s.alloc());
+        match crate::io::stored_path(&src.path, Path::new(&path)) {
+            Ok(abs) => {
+                ns.path = abs.to_string_lossy().into_owned();
+                match crate::io::decode_file(&mut files, &abs, sr) {
+                    Ok(audio) => {
+                        ns.frames = audio.buffer.frames() as u64;
+                        ns.sample_rate = sr;
+                        ns.unsaved = true;
+                        s.pool.insert(ns.id, audio);
+                    }
+                    Err(_) => {
+                        ns.unsaved = false;
+                        missing.push(ns.path.clone());
+                    }
+                }
             }
-            None => {
+            Err(why) => {
                 ns.unsaved = false;
-                missing.push(ns.path.clone());
+                missing.push(format!("{}: {why}", ns.path));
             }
         }
+        map.insert(src.id.0, ns.id);
         s.sources.push(ns);
-        map.insert(src.id.0, nid);
     }
     let mut out = Vec::new();
+    // The donor's Auto Rename schemes come along under new keys, shared as they were.
+    let mut names: std::collections::BTreeMap<u64, u64> = Default::default();
     for mut tr in picked {
         tr.id = TrackId(s.alloc());
         tr.name = s.unique_track_name(&tr.name);
@@ -481,6 +481,14 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
                 {
                     *source = *n;
                 }
+                c.auto_name = c.auto_name.and_then(|k| {
+                    let scheme = other.auto_names.get(&k)?;
+                    Some(*names.entry(k).or_insert_with(|| {
+                        let (key, id) = (s.alloc(), crate::new_scheme_id(s));
+                        s.auto_names.insert(key, soundcraft_model::AutoName { id, ..scheme.clone() });
+                        key
+                    }))
+                });
             }
         }
         // The donor's source ids mean nothing here: remap the sample, or drop it when it didn't come along.
@@ -510,7 +518,6 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn option_flags_toggle() {
         let mut e = Engine::default();
@@ -556,8 +563,7 @@ mod tests {
         e.execute("edit.select", &json!({"start": 48_000})).unwrap();
         e.execute("setup.current_timecode", &json!({"timecode": "01:00:00:00"})).unwrap();
         let s = e.session();
-        let shown =
-            soundcraft_time::format_position(48_000, soundcraft_time::TimeFormat::Timecode, s.sample_rate, &s.tempo, s.frame_rate, s.timecode_start);
+        let shown = s.format_position(48_000, soundcraft_time::TimeFormat::Timecode);
         assert_eq!(shown, "01:00:00:00");
     }
 
@@ -607,6 +613,29 @@ mod tests {
         assert!(e.session().pool.get(src).is_some());
         assert_eq!(e.session().track_by_name("Keys").unwrap().clips().len(), 1);
         assert!(e.execute("file.import_session_data", &json!({"path": path, "tracks": ["Nope"]})).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_session_data_brings_auto_rename_schemes_under_new_keys() {
+        let dir = std::env::temp_dir().join(format!("sc-import-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("donor.scraft").to_string_lossy().into_owned();
+        let mut donor = crate::demo::demo_engine();
+        let kick: Vec<_> = donor.session().track_by_name("Kick").unwrap().clips().iter().map(|c| c.id.0).collect();
+        donor.execute("clip.auto_rename", &json!({"clips": kick, "name": "Hit", "number": 5})).unwrap();
+        crate::io::save_session(&mut donor, &path).unwrap();
+        let mut e = crate::demo::demo_engine();
+        let bass = e.session().track_by_name("Bass").unwrap().clips()[0].id;
+        e.execute("clip.auto_rename", &json!({"clips": [bass], "name": "Low"})).unwrap();
+        e.execute("file.import_session_data", &json!({"path": path, "tracks": ["Kick"]})).unwrap();
+        let s = e.session();
+        assert_eq!(s.auto_names.len(), 2, "the donor's scheme comes in beside this session's");
+        let imported = s.tracks.iter().rfind(|t| t.name.starts_with("Kick")).unwrap();
+        let keys: std::collections::BTreeSet<_> = imported.clips().iter().map(|c| c.auto_name).collect();
+        assert_eq!(keys.len(), 1, "the imported clips still share one scheme");
+        let key = keys.into_iter().next().flatten().unwrap();
+        assert_eq!((s.auto_names[&key].name.as_str(), s.auto_names[&key].number), ("Hit", 5));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

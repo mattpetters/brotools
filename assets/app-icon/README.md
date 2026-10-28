@@ -1,33 +1,29 @@
-# SoundCraft app icon (placeholder)
+# BroTools app icon
 
-**A nightingale singing**, as an engraving-style head-and-shoulders portrait in the Crafting Apps'
-owl-template framing (craftrules `standards/icon-design.md`): a full-bleed colour field, the bird
-in three-quarter view with its bill open and its eye on the viewer, its breast and wing running off
-the bottom and right edges, three song arcs leaving the bill.
-
-This is a **placeholder** until the owner draws SoundCraft's icon in ArtCraft like the other apps'
-icons. Replace `icon.svg` and run `packaging/icons.sh`; nothing else needs to change.
+**A "b" over a wave**, mirror-symmetric: a white ring centred on a teal gradient tile, a
+symmetric wave (crest, trough, crest) crossing the lower third and merging into the ring, and a
+geometric lowercase "b" (round-capped stem, circular bowl) above it.
 
 ## Palette
 
-Exactly three colours:
-
 | Colour | Hex | Used for |
 |---|---|---|
-| Ink | `#0b0b0c` | Line work and contour |
-| Paper | `#efe9dc` | The bird and the song arcs |
-| SoundCraft teal (app colour) | `#14a9c4` | The full-bleed background field |
+| Teal, top | `#2fc6dd` | Gradient start |
+| Teal, bottom | `#0b8aa3` | Gradient end |
+| White | `#ffffff` | Ring, wave, letter |
 
 ## Geometry
 
-A 512 × 512 viewBox, clipped to a rounded square with `rx=112`. Windows and Linux use the full
+A 512 × 512 viewBox, clipped to a rounded square with `rx=112`. Keep that clip: macOS 26+ applies its
+own squircle mask, and only an icon whose opaque body covers that mask escapes the grey fallback
+frame ("icon jail"). A true superellipse leaves transparent corners and gets framed (checked on
+macOS 27.2 with `NSWorkspace.icon(forFile:)`). Windows and Linux use the full
 tile. The macOS icons (`soundcraft.icns`, `soundcraft-macos-512.png`) sit on Apple's grid: an
 824/1024 body with a transparent margin.
 
 ## Provenance and licence
 
-Drawn from scratch as hand-placed SVG paths by the SoundCraft contributors; no source image was
-traced or copied. MIT OR Apache-2.0, like the code (see `ATTRIBUTION.md`).
+Drawn from scratch as hand-placed SVG paths for brotools; no source image was traced or copied. MIT OR Apache-2.0, like the code (see `ATTRIBUTION.md`).
 
 ## Files
 

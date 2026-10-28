@@ -70,7 +70,7 @@ impl AutoParam {
         match self {
             AutoParam::Volume => "volume".into(),
             AutoParam::Pan(0) => "pan".into(),
-            AutoParam::Pan(i) => format!("pan {}", i + 1),
+            AutoParam::Pan(i) => format!("pan {}", u16::from(*i) + 1),
             AutoParam::Mute => "mute".into(),
             AutoParam::SendLevel(i) => format!("send {} level", slot_letter(*i)),
             AutoParam::SendPan(i) => format!("send {} pan", slot_letter(*i)),
@@ -199,26 +199,38 @@ impl AutomationLane {
         }
         self.set_point(start, value);
         self.set_point(end, value);
-        self.set_point(end.saturating_add(1), after);
+        let anchor = end.saturating_add(1);
+        // A real breakpoint already at `end + 1` keeps its own value.
+        if self.points.binary_search_by(|p| p.at.cmp(&anchor)).is_err() {
+            self.set_point(anchor, after);
+        }
     }
 
     /// Thin: remove points whose removal changes the curve by less than `tolerance`.
     pub fn thin(&mut self, tolerance: f32) -> usize {
-        if self.points.len() < 3 {
+        // Linear thinning would move the transitions of step lanes.
+        if matches!(self.param, AutoParam::Mute | AutoParam::SendMute(_)) || self.points.len() < 3 || tolerance.is_nan() {
             return 0;
         }
+        let tolerance = f64::from(tolerance);
         let mut keep = vec![true; self.points.len()];
         let mut last = 0usize;
+        // Slopes from the last kept point that keep every point removed since then within `tolerance`.
+        let (mut lo, mut hi) = (f64::NEG_INFINITY, f64::INFINITY);
         for i in 1..self.points.len() - 1 {
             let (Some(a), Some(b), Some(c)) = (self.points.get(last), self.points.get(i), self.points.get(i + 1)) else { continue };
-            let span = (c.at - a.at) as f32;
-            let interp = if span > 0.0 { a.value + (c.value - a.value) * ((b.at - a.at) as f32 / span) } else { a.value };
-            if (interp - b.value).abs() <= tolerance {
+            let dt = b.at.saturating_sub(a.at) as f64;
+            let rise = f64::from(b.value) - f64::from(a.value);
+            lo = lo.max((rise - tolerance) / dt);
+            hi = hi.min((rise + tolerance) / dt);
+            let slope = (f64::from(c.value) - f64::from(a.value)) / c.at.saturating_sub(a.at) as f64;
+            if (lo..=hi).contains(&slope) {
                 if let Some(k) = keep.get_mut(i) {
                     *k = false;
                 }
             } else {
                 last = i;
+                (lo, hi) = (f64::NEG_INFINITY, f64::INFINITY);
             }
         }
         let before = self.points.len();
@@ -244,6 +256,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pan_label_max_does_not_overflow() {
+        assert_eq!(AutoParam::Pan(255).label(), "pan 256");
+    }
+
+    #[test]
     fn interpolation_and_steps() {
         let mut l = AutomationLane::new(AutoParam::Volume);
         assert_eq!(l.value_at(10, -3.0), -3.0);
@@ -256,6 +273,15 @@ mod tests {
         m.set_point(100, 1.0);
         assert_eq!(m.value_at(99, 0.0), 0.0);
         assert_eq!(m.value_at(100, 0.0), 1.0);
+    }
+
+    #[test]
+    fn write_range_keeps_point_right_after_end() {
+        let mut l = AutomationLane::new(AutoParam::Volume);
+        l.set_point(0, 0.0);
+        l.set_point(11, -100.0);
+        l.write_range(2, 10, -20.0, 0.0);
+        assert_eq!(l.value_at(11, 0.0), -100.0);
     }
 
     #[test]
@@ -277,6 +303,36 @@ mod tests {
         }
         assert_eq!(l.thin(0.01), 9);
         assert_eq!(l.points.len(), 2);
+    }
+
+    #[test]
+    fn thin_keeps_removed_points_within_tolerance() {
+        for direction in [1.0, -1.0] {
+            let mut lane = AutomationLane::new(AutoParam::Volume);
+            for (at, value) in [(0, 0.0), (100, 0.0), (200, 0.0), (300, 0.12), (400, 0.26)] {
+                lane.set_point(at, value * direction);
+            }
+            let original = lane.points.clone();
+            let tolerance = 0.1;
+            assert!(lane.thin(tolerance) > 0);
+            for point in original {
+                let error = (lane.value_at(point.at, 0.0) - point.value).abs();
+                assert!(error <= tolerance, "at {}: error {error} exceeds {tolerance}", point.at);
+            }
+        }
+    }
+
+    #[test]
+    fn thin_keeps_mute_changes_in_place() {
+        for param in [AutoParam::Mute, AutoParam::SendMute(0)] {
+            let mut lane = AutomationLane::new(param);
+            for (at, value) in [(0, 0.0), (9000, 1.0), (10000, 1.0)] {
+                lane.set_point(at, value);
+            }
+            lane.thin(0.1);
+            assert_eq!(lane.value_at(8999, 0.0), 0.0);
+            assert_eq!(lane.value_at(9000, 0.0), 1.0);
+        }
     }
 
     #[test]
