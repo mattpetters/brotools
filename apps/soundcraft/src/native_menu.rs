@@ -32,18 +32,18 @@ impl NativeMenu {
         let (tx, events) = channel();
         let mut native = Self { menu, entries: Vec::new(), events, last_sync: None };
         let app_menu = Submenu::new("SoundCraft", true);
-        native.add_item(app, &app_menu, "About SoundCraft", "", Some("window.about".into()))?;
+        native.add_item(app, &app_menu, "About BroTools", "", Some("window.about".into()))?;
         native.add_item(app, &app_menu, "Session Info", "", Some("window.session_info".into()))?;
         native.add_item(app, &app_menu, "Session Audio Health", "", Some("window.audio_health".into()))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
         app_menu.append(&PredefinedMenuItem::services(None))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
         // muda's own Hide items take ⌘H and ⌥⌘H, which are Heal Separation and Copy to Send.
-        app_menu.append(&MenuItem::with_id("hide", "Hide SoundCraft", true, None))?;
+        app_menu.append(&MenuItem::with_id("hide", "Hide BroTools", true, None))?;
         app_menu.append(&MenuItem::with_id("hide_others", "Hide Others", true, None))?;
         app_menu.append(&PredefinedMenuItem::show_all(None))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
-        native.add_item(app, &app_menu, "Quit SoundCraft", "", Some("app.quit".into()))?;
+        native.add_item(app, &app_menu, "Quit BroTools", "", Some("app.quit".into()))?;
         native.menu.append(&app_menu)?;
         let aliases = menus::ui_aliases();
         for root in menus::tree() {

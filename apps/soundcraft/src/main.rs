@@ -83,13 +83,13 @@ impl eframe::App for App {
         // title carries them; elsewhere the egui menu bar already does.
         let title = if self.0.native_menu_bar {
             format!(
-                "{}{} — SoundCraft — {}",
+                "{}{} — BroTools — {}",
                 self.0.engine.session().name,
                 if self.0.engine.is_dirty() { " *" } else { "" },
                 if self.0.ui.window == soundcraft_ui_egui::MainWindow::Edit { "Edit" } else { "Mix" }
             )
         } else {
-            format!("{} — SoundCraft", self.0.engine.session().name)
+            format!("{} — BroTools", self.0.engine.session().name)
         };
         set_title(ctx, title);
     }
@@ -221,7 +221,7 @@ fn main() -> eframe::Result {
     let prefs = load_prefs(&env).unwrap_or_default();
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("SoundCraft")
+            .with_title("BroTools")
             .with_inner_size(sane_window_size(prefs.window_size))
             .with_maximized(prefs.window_maximized)
             .with_min_inner_size([960.0, 600.0])
@@ -252,7 +252,8 @@ fn main() -> eframe::Result {
             let player =
                 if no_audio { None } else { Some(soundcraft_playback::Player::with_config(Arc::new(engine.session().clone()), &prefs.audio)) };
             let mut app = SoundApp::new(engine, player, services());
-            app.set_startup_update_check(true);
+            // brotools: off, the updater fetches upstream SoundCraft releases and would replace this build.
+            app.set_startup_update_check(false);
             app.set_system_fonts(env.system_fonts());
             app.autosave_dir = env.config_dir.as_ref().map(|d| d.join("Autosave"));
             app.leftovers = app.autosave_dir.as_deref().map(soundcraft_engine::autosave::leftovers).unwrap_or_default();
@@ -306,8 +307,8 @@ mod tests {
             out.textures_delta.clear();
             out.viewport_output.values().flat_map(|v| &v.commands).filter(|c| matches!(c, egui::ViewportCommand::Title(_))).count()
         };
-        assert_eq!(titles("Song — SoundCraft"), 1);
-        assert_eq!(titles("Song — SoundCraft"), 0);
-        assert_eq!(titles("Song * — SoundCraft"), 1);
+        assert_eq!(titles("Song — BroTools"), 1);
+        assert_eq!(titles("Song — BroTools"), 0);
+        assert_eq!(titles("Song * — BroTools"), 1);
     }
 }
