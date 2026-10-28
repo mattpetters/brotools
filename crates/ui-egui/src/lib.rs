@@ -23,6 +23,8 @@ pub mod shortcuts;
 pub mod theme;
 pub mod toolbar;
 pub mod updates_ui;
+#[cfg(not(target_arch = "wasm32"))]
+mod upstream_status;
 pub mod video_track;
 pub mod waveform;
 pub mod widgets;

@@ -107,6 +107,11 @@ fn status_bar(app: &mut SoundApp, ui: &mut Ui) {
     soundcraft_model::truncate_chars(&mut left, 4 * soundcraft_model::MAX_NAME_CHARS);
     ui.painter().text(pos2(r.min.x + 10.0, r.center().y), Align2::LEFT_CENTER, left, regular(11.0), t.text_dim);
     let undo = app.engine.undo_label().map_or(String::new(), |l| format!("Undo {l}"));
+    #[cfg(not(target_arch = "wasm32"))]
+    let undo = match crate::upstream_status::label(ui.ctx()) {
+        Some(upstream) => format!("{upstream}   {undo}"),
+        None => undo,
+    };
     ui.painter().text(
         pos2(r.max.x - 10.0, r.center().y),
         Align2::RIGHT_CENTER,
