@@ -39,6 +39,21 @@ cargo xtask ci
 
 Prefer merging over rebasing: the fork is long-lived and public, and merges keep its history stable.
 
+## Build and install
+
+```sh
+packaging/macos/install-brotools.sh --dry-run   # show what would change
+packaging/macos/install-brotools.sh             # build, then replace /Applications/BroTools.app
+```
+
+It builds for this Mac, then replaces BroTools in `/Applications` only if the build differs. A
+running BroTools is quit first; if it doesn't quit (unsaved changes), the script stops and changes
+nothing. The old app is restored if the swap fails. The Dock's BroTools tile is pointed at the new
+app (added if missing, via `dockutil`), and BroTools is relaunched if it was running.
+
+The build records the upstream commit it is based on, and the Edit window's status bar shows
+"N commits behind upstream" (asked from GitHub once per launch). `cargo run` builds leave it out.
+
 ## What the fork changes
 
 | Change | Files |
@@ -47,6 +62,24 @@ Prefer merging over rebasing: the fork is long-lived and public, and merges keep
 | Window title, macOS app menu, startup update check off | `apps/soundcraft/src/main.rs`, `apps/soundcraft/src/native_menu.rs` |
 | App icon (edit `icon.svg`, then run `packaging/icons.sh`) | `assets/app-icon/`, `ATTRIBUTION.md` |
 | README title | `README.md` |
+| Status bar "N commits behind upstream" | `crates/ui-egui/src/upstream_status.rs`, `edit_window.rs`, `lib.rs` |
+| Build-and-install script | `packaging/macos/install-brotools.sh` |
 
 Crate names, binaries, the `.scraft` format and its UTI stay as upstream named them, so sessions
 open in both apps and merges stay small.
+
+## Contributing back to upstream
+
+Fork-only work (branding, the upstream counter, install script, personal QOL) stays here. Fixes and
+features that would help every SoundCraft user can go upstream as their own PRs. To keep that easy:
+
+- Commit upstream-worthy changes separately from fork-only ones, never mixed in one commit.
+- To contribute, branch from `upstream/main`, cherry-pick the commits, run `cargo xtask ci`, and
+  open the PR from this fork to `storytold/soundcraft`. Follow upstream's `AGENTS.md` (and
+  `storytold/craftrules`); add yourself to `contributors/people.toml` with the first PR.
+- When upstream merges it, the next sync dedupes it: drop the row below.
+
+| Change | Commit(s) | Upstream target | Status |
+|---|---|---|---|
+| Adapt #568 to the current folder picker and `Env` API | `6b4a79b` | comment or commit on storytold/soundcraft#568 | not sent |
+| Scan child reads its arguments with `args_os` (launch panic on non-Unicode args, ast-grep `args-os`) | `753164f` | storytold/soundcraft#568 | not sent |
