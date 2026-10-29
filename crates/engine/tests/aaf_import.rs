@@ -207,6 +207,11 @@ fn aaf_and_dawproject_round_trip_fades_gain_automation_and_markers() {
             params["media_dir"] = media;
         }
         into.execute("file.import_aaf", &params).unwrap();
+        if embed {
+            let mut via_menu = Engine::default();
+            via_menu.execute("file.import_session_data", &json!({"path": path})).unwrap();
+            assert_eq!(via_menu.session().tracks[0].clips()[0].length, 12000, "{name} via Session Data");
+        }
         let clip = &into.session().tracks[0].clips()[0];
         assert_eq!((clip.start, clip.length, clip.source_offset()), (4800, 12000, 1000), "{name}");
         assert!((clip.gain_db - -3.0).abs() < 0.02, "{name} gain {}", clip.gain_db);

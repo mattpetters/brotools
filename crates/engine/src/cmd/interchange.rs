@@ -86,6 +86,11 @@ fn import(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(report)
 }
 
+/// What File ▸ Import ▸ Session Data runs for an AAF, DAWproject, OMF or Pro Tools path.
+pub(crate) fn import_foreign(e: &mut Engine, path: &str) -> Result<Value> {
+    import_path(e, &json!({"path": path}), path.to_ascii_lowercase().ends_with(".dawproject"))
+}
+
 fn import_path(e: &mut Engine, p: &Value, force_daw: bool) -> Result<Value> {
     stopped(e).map_err(|why| bad("file.import_aaf", why))?;
     let path = str_param(p, "path").ok_or_else(|| bad("file.import_aaf", "`path` required"))?;
