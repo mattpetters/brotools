@@ -548,6 +548,11 @@ fn midi_devices(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_midi_devices = open;
     if refresh {
         app.midi_hw.refresh(app.engine.session());
+        // The menu opens this window, so the studio list is the ports just found.
+        let mut names: Vec<&str> = app.midi_hw.inputs().iter().chain(app.midi_hw.outputs().iter()).map(|p| p.name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        let _ = app.engine.execute("setup.midi_studio", &json!({"devices": names}));
     }
     if let Some(on) = clock_set {
         let _ = app.engine.execute("setup.midi_beat_clock", &json!({"enabled": on}));
