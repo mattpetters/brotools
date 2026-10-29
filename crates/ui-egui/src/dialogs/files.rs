@@ -57,7 +57,8 @@ pub fn open_path(app: &mut SoundApp, path: &std::path::Path) {
         }
     };
     let lower = p.to_ascii_lowercase();
-    let r = if lower.ends_with(".scraft") {
+    let r = if lower.ends_with(".scraft") || lower.ends_with(".ptx") || lower.ends_with(".ptxt") || lower.ends_with(".ptf") || lower.ends_with(".pts")
+    {
         run_or_ask(app, "session.open", json!({"path": p}))
     } else if lower.ends_with(".mid") || lower.ends_with(".midi") || lower.ends_with(".smf") {
         app.run("file.import_midi", json!({"path": p}))

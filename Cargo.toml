@@ -22,6 +22,7 @@ soundcraft-vst3-host = { path = "crates/vst3-host" }
 soundcraft-plugin-scan = { path = "crates/plugin-scan" }
 soundcraft-au-host = { path = "crates/au-host" }
 soundcraft-model = { path = "crates/model" }
+soundcraft-ptx = { path = "crates/ptx" }
 soundcraft-mix = { path = "crates/mix" }
 soundcraft-engine = { path = "crates/engine" }
 soundcraft-playback = { path = "crates/playback" }
