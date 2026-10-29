@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (MIDI devices: input, output, recording, clock and MTC out) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (MIDI devices; audio I/O duplex clock and record offset) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -23,7 +23,7 @@ main platform). Any **no** keeps SoundCraft **pre-alpha**, and those rows are th
 
 | Workflow | Works end to end? | Evidence | Hours to pass |
 |---|---|---|---:|
-| Record audio from a chosen interface at a chosen buffer size, monitor, punch, keep the takes | **no** | Default output and input devices only. Fixed 512-sample block. Separate input and output streams. `setup.playback_engine` params ignored by playback. Takes held in RAM until stop (PR #84). No input device choice (#42). | 35–55 |
+| Record audio from a chosen interface at a chosen buffer size, monitor, punch, keep the takes | **no** | Device, rate and buffer choice exist. Record and playback share one device when the input is unset, with record-offset compensation and low-latency monitoring, and takes stream to disk. Still two cpal callbacks, a fixed 512-sample mix block, and no on-device verification. | 15–25 |
 | Record MIDI from a controller and play it back through an instrument | **partial** | Devices, live play-through, recording (punch, loop, merge), hardware output, beat clock and MTC out. Tested with injected events. Not yet played on a physical keyboard on macOS (the gate's platform) or Windows. | 8–15 |
 | Edit: select, trim, fade, comp playlists, Slip/Shuffle/Grid | yes (rough) | Every Edit menu command; property-tested with undo; open bugs #3, #5, #140 don't block the workflow | — |
 | Mix with built-in and third-party plugins, sends, busses, automation | partial (passes on CLAP/AU) | 27 built-in processors; CLAP and AU host on the signed macOS build, but its missing entitlement blocks third-party VST3 (#153). No AU plugin windows yet; VST3 windows on macOS only | 1–2 (entitlement) |
@@ -90,6 +90,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-29 | major | MIDI devices: input, output, live play-through, recording, beat clock and MTC out. The record-from-a-controller gate row is partial |
+| 2026-10-29 | trivial | Alpha-gate evidence: same-device duplex, record offset and record-to-disk exist; the row stays no until hardware verification and a mix block that follows the device |
 | 2026-10-24 | trivial | 27 built-in processors, as the plugin registry holds; the sampler (#108) is no longer listed under plugin essentials |
 | 2026-10-14 | trivial | M8: reject oversized MCP batches before execution (#460) |
 | 2026-10-10 | minor | Added the alpha gate (3 of 6 core workflows fail → pre-alpha) |

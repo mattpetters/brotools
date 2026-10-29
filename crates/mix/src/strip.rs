@@ -211,6 +211,14 @@ pub(crate) struct LiveInput<'a> {
     pub(crate) recording: bool,
     pub(crate) midi: &'a [LiveMidi],
     pub(crate) ports: &'a MidiPorts,
+    /// Options ▸ Low Latency Monitoring: monitored tracks skip inserts and delay compensation.
+    pub(crate) low_latency: bool,
+}
+
+/// The track is hearing its live input this block (input monitor, or record-arm while recording
+/// or while the transport is stopped).
+pub(crate) fn hears_live_input(t: &Track, live: &LiveInput<'_>) -> bool {
+    t.kind == TrackKind::Audio && !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording)))
 }
 
 /// The block being rendered: where it starts, its length, and whether any track is soloed.
@@ -228,19 +236,13 @@ fn zero_buf(buf: &mut [Vec<f32>], frames: usize) {
 }
 
 /// Input monitoring: the track hears its hardware input instead of its clips.
-fn monitor_input(t: &Track, strip: &mut Strip, live: &LiveInput<'_>, frames: usize) {
-    let first = match &t.mixer.input {
-        Route::Hardware(h) => {
-            h.trim_start_matches("In ").split(['-', ' ']).next().and_then(|n| n.parse::<usize>().ok()).map_or(0, |n| n.saturating_sub(1))
-        }
-        _ => 0,
-    };
-    let n_in = live.input.len().max(1);
+fn monitor_input(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput<'_>, frames: usize) {
+    let chans = s.hardware_input_channels(&t.mixer.input, strip.buf.len(), live.input.len());
     for (k, dst) in strip.buf.iter_mut().enumerate() {
-        if let Some(src) = live.input.get((first + k) % n_in) {
-            for (d, x) in dst.iter_mut().zip(src.iter()).take(frames) {
-                *d = *x;
-            }
+        let idx = chans.get(k).copied().unwrap_or(usize::MAX);
+        let Some(src) = live.input.get(idx) else { continue };
+        for (d, x) in dst.iter_mut().zip(src.iter()).take(frames) {
+            *d = *x;
         }
     }
 }
@@ -461,8 +463,8 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
     zero_buf(&mut strip.buf, frames);
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
     match t.kind {
-        TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording))) => {
-            monitor_input(t, strip, live, frames);
+        TrackKind::Audio if hears_live_input(t, live) => {
+            monitor_input(s, t, strip, live, frames);
         }
         TrackKind::Audio if live.monitor_only => {}
         TrackKind::Instrument | TrackKind::Midi if live.monitor_only => render_midi_monitor(s, t, strip, blk, &transport, live),
@@ -477,7 +479,15 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
             c.iter_mut().take(frames).for_each(|x| *x *= trim);
         }
     }
-    run_inserts(t, strip, blk, &transport);
+    // Low Latency Monitoring bypasses inserts on the tracks that are hearing their input, so a
+    // plugin's lookahead is not part of the cue mix. The recorded take is shifted later by the
+    // record offset, not by this bypass.
+    if live.low_latency && hears_live_input(t, live) {
+        strip.latency = 0;
+        strip.gr = 0.0;
+    } else {
+        run_inserts(t, strip, blk, &transport);
+    }
     let soloed_out = any_solo && !t.mixer.solo && !t.mixer.solo_safe && !receives_solo(s, t);
     strip.muted = t.mixer.mute || soloed_out;
     if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {

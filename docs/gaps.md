@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (G-02: MIDI input and output devices, live play-through, recording, beat clock and MTC out) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (G-02: MIDI devices; G-01: duplex clock and record offset) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -15,12 +15,12 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
-| G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
+| G-01 | **Alpha blocker.** Duplex is two cpal streams on one device (no single callback); mix block stays 512; JACK and on-device verification still open | Hardware | [hardware-parity.md](hardware-parity.md) | 8–15 |
 | G-02 | MIDI devices: no hardware verification on macOS/Windows; no MTC chase, MMC or SysEx | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 8–15 |
 | G-03 | **Alpha blocker.** Cannot exchange sessions with Pro Tools (no AAF/OMF, no `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 15–25 |
-| G-06 | (Record-to-disk part: alpha blocker for the tracking row) Sources decoded whole into RAM; recording into RAM | Performance | [hardware-parity.md](hardware-parity.md) | 15–25 |
+| G-06 | (Playback streaming: alpha blocker for long sessions) Sources decoded whole into RAM. Recording already streams to disk | Performance | [hardware-parity.md](hardware-parity.md) | 10–20 |
 | G-07 | Nothing is compared against Pro Tools' output (no fidelity harness) | Features | this file | 20–30 |
 | G-08 | Built-in plugin catalogue thin and unverified | Features | [plugin-parity.md](plugin-parity.md) | 80–120 |
 | G-09 | English only, no string catalog, no CJK/RTL rendering | Localization | [localization-parity.md](localization-parity.md) | 70–110 |
@@ -46,11 +46,21 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   device, sample rate and device buffer size (kept with the preferences, per machine; `ui.audio_device`
   for agents); f32 and 16/32-bit integer devices; ASIO behind the opt-in `asio` build feature
   (verified on Windows with an SSL 2+ at 128 samples).
-- **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
-  output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
-  in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
-  verification on macOS and Linux. The mix still runs in fixed 512-sample blocks.
-  `setup.playback_engine` still stores `device`/`buffer_size` in the session, unused.
+- **Done (2026-10-29):** When the input is left unset, recording opens the output device at the
+  output's rate and the shared buffer, so record and playback share one device clock. cpal still
+  delivers two callbacks; there is no single full-duplex stream in cpal 0.18. Driver timestamps
+  fill input and output latency. `setup.record_offset` stores a user offset; placing a take shifts
+  it earlier by that latency (or by two buffers when the driver reports none). Named input and
+  output paths carry channel lists (`setup.io`); tracks assign them with `track.input` /
+  `track.output`. Low Latency Monitoring bypasses inserts and plugin-delay alignment on tracks
+  that are hearing their input, and the monitor ring drops a stale backlog instead of playing it
+  late. Builds on upstream PRs #575 (I/O paths), #808 (backlog trim) and #206 (monitor bypass).
+- **Missing:** one OS duplex callback (cpal does not offer one), JACK/PipeWire (#491), a mix block
+  that follows the device buffer (#1034; still 512), the Pro Tools channel-grid window and
+  automatic sub-paths from #575, master-fader processing on hardware output paths, ASIO in
+  official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), and verification on
+  real interfaces. `setup.playback_engine` still stores `device`/`buffer_size` in the session;
+  the app applies the device through `ui.audio_device`.
 - **Evidence:** code above; Playback Engine window says "Mix block size: 512 samples"; issue #42
   (no input device selection, forced monitoring feedback with virtual routing).
 - **Impact:** blocks tracking with any multichannel interface; latency makes overdubs hard.
@@ -134,11 +144,16 @@ launch #142; Linux #45, #107.
 
 ### G-06. Memory-bound media
 
-- **Missing:** streaming sources from disk; recording to disk. Every source is decoded whole into
-  the `SourcePool`; takes accumulate in RAM until stop (PR #84 open).
-- **Impact:** hour-long multitrack sessions and long takes exhaust memory; a crash during a long
-  take loses it.
-- **Estimate:** ≈ 15–25 h.
+- **Done:** recording streams each armed track to a WAV in Audio Files and rewrites the header
+  every second (upstream #84, grovebit, already in this tree). A crash mid-take leaves a playable
+  file. Takes are not held only in RAM.
+- **Missing:** streaming sources from disk during playback. Every source is still decoded whole
+  into the `SourcePool`. Upstream #43 (`DiskWavReader`, vbasky) reads a WAV window from disk and
+  is not wired into the mix; doing that means the engine must page clip audio without changing
+  edit, fade and warp results. Out of scope for the duplex/I/O change.
+- **Impact:** hour-long multitrack sessions exhaust memory on playback. A crash during a take no
+  longer loses the audio already written.
+- **Estimate:** ≈ 10–20 h for playback streaming.
 
 ### G-07. Fidelity harness against Pro Tools
 
@@ -236,6 +251,7 @@ missing. Out of scope unless the owner decides otherwise.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-29 | major | G-02 shrunk: MIDI input and output, live play-through, recording, beat clock and MTC out. Hardware verification on macOS/Windows, chase, MMC and SysEx remain |
+| 2026-10-29 | minor | G-01: same-device duplex clock, named I/O paths, record offset, low-latency monitoring. G-06: record-to-disk was already in tree (#84); playback streaming remains |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |
 | 2026-10-19 | trivial | G-04: Float32 encoding retains finite headroom (#791); integer clipping and non-finite handling retained |

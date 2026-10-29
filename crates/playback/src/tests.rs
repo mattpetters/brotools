@@ -718,3 +718,35 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     assert!(out.iter().any(|x| x.abs() > 0.1), "the input is heard");
     assert!(shared.meters.lock().unwrap().tracks.get(&t).is_some_and(|m| m.peak[0] > 0.1), "and metered");
 }
+
+#[test]
+fn hardware_output_reaches_its_device_channels_and_is_not_folded() {
+    use soundcraft_model::{ChannelFormat, Clip, OutputPath, Route, SourceAudio, SourceId, TrackKind};
+    let mut s = soundcraft_model::Session::default();
+    s.outputs.push(OutputPath::new("Out 3-4", 2, ChannelFormat::Stereo));
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let chans = vec![vec![0.2f32; 48_000], vec![0.4; 48_000]];
+    s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: chans })));
+    let id = s.new_clip_id();
+    let tr = s.track_mut(t).unwrap();
+    tr.playlist_mut().unwrap().clips.push(Clip::audio(id, "x", SourceId(5), 0, 0, 48_000));
+    tr.mixer.output = Route::Hardware("Out 3-4".into());
+    let s = Arc::new(s);
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut wide = vec![0.0f32; 4 * 256];
+    st.fill(&mut wide, 4);
+    let f = &wide[4 * 100..4 * 101];
+    assert!(f[0].abs() < 1e-4 && f[1].abs() < 1e-4, "main mix is empty: {f:?}");
+    assert!((f[2] - 0.2).abs() < 1e-4 && (f[3] - 0.4).abs() < 1e-4, "{f:?}");
+    let mut stereo = vec![0.0f32; 2 * 64];
+    st.fill(&mut stereo, 2);
+    assert!(stereo.iter().all(|x| x.abs() < 1e-3), "a stereo device does not fold Out 3-4 into the speakers: {stereo:?}");
+}

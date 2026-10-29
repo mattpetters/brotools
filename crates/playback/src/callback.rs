@@ -3,7 +3,7 @@ use super::midi_sync::{BeatClock, MtcGen, RawMidi, StampedMidi, destination_port
 use super::{
     Arc, AtomicBool, BLOCK, BTreeMap, Cmd, HashMap, HashSet, MAX_CHANNELS, MeterSnapshot, MixEngine, OLD_SESSIONS, Ordering, OutputTrouble, Plugin,
     PluginEditor, PluginStateReader, PluginStates, PreparedInstance, Range, Receiver, Samples, Sender, Session, Shared, SyncSender, TrackId,
-    itu_stereo_fold, main_channels, record, sync_channel,
+    itu_stereo_fold, main_channels, playback_channels, record, sync_channel,
 };
 use soundcraft_mix::{MidiOut, hears_live_midi};
 
@@ -16,6 +16,8 @@ pub(crate) struct Fault {
     pub(crate) gone: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
+    /// Output latency the driver last reported, in frames (0 when it has not said).
+    pub(crate) output_latency: std::sync::atomic::AtomicU32,
     /// The UI has been told.
     reported: AtomicBool,
 }
@@ -74,8 +76,10 @@ pub(crate) struct AudioState {
     playing: bool,
     end: Option<Samples>,
     looped: Option<Range>,
-    /// Rendered frames waiting to be consumed (planar, main channels) and the fractional read index.
+    /// Rendered frames waiting to be consumed (planar) and the fractional read index.
     pending: Vec<Vec<f32>>,
+    /// Main-mix width. Hardware channels past this are copied, not folded into stereo.
+    main_ch: usize,
     /// Stereo fold-down gains per main channel (used when the device has fewer channels).
     fold: [(f32, f32); MAX_CHANNELS],
     pub(crate) pending_len: usize,
@@ -121,7 +125,8 @@ impl AudioState {
         garbage: Sender<Vec<Box<dyn Plugin>>>,
     ) -> Self {
         let sr = session.sample_rate.as_f64() as f32;
-        let nch = main_channels(&session);
+        let main_ch = main_channels(&session);
+        let nch = playback_channels(&session);
         AudioState {
             garbage,
             old_sessions: None,
@@ -135,6 +140,7 @@ impl AudioState {
             end: None,
             looped: None,
             pending: vec![vec![0.0; BLOCK]; nch],
+            main_ch,
             pending_len: 0,
             read: 0.0,
             device_rate,
@@ -190,8 +196,9 @@ impl AudioState {
                         let _ = self.garbage.send(old.drain_plugins());
                     }
                     self.mix.adopt(instances);
-                    // The main format changed (a document edit, not steady state): resize.
-                    let nch = main_channels(&s);
+                    // The main format or hardware paths changed (a document edit, not steady state): resize.
+                    let nch = playback_channels(&s);
+                    self.main_ch = main_channels(&s);
                     if self.pending.len() != nch {
                         self.pending = vec![vec![0.0; BLOCK]; nch];
                         self.pending_len = 0;
@@ -444,24 +451,25 @@ impl AudioState {
                 let b = if i0 + 1 < self.pending_len { ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a) } else { a };
                 a * (1.0 - fr) + b * fr
             };
-            write_frame(frame, channels, nch, sounding, &self.fold, sample);
+            write_frame(frame, channels, self.main_ch, nch, sounding, &self.fold, sample);
             self.read += step;
         }
         self.record_tail = false;
     }
 }
 
-/// Write one device frame from `nch` rendered channels: fold surround to stereo (a mono device
-/// averages the two sides), or copy the channels straight through. `sample(c)` is channel `c`.
-fn write_frame(frame: &mut [f32], channels: usize, nch: usize, sounding: bool, fold: &[(f32, f32)], sample: impl Fn(usize) -> f32) {
-    if channels < nch {
+/// Write one device frame. Surround folds only when the device is narrower than the main mix.
+/// Hardware channels past the main mix are copied when the device has them, and dropped when it
+/// does not — they are not folded into the stereo speakers.
+fn write_frame(frame: &mut [f32], channels: usize, main_ch: usize, nch: usize, sounding: bool, fold: &[(f32, f32)], sample: impl Fn(usize) -> f32) {
+    if channels < main_ch.max(1) {
         // Fold surround to stereo first; a mono device averages the two sides.
         let (mut l, mut r) = (0.0f32, 0.0f32);
         if sounding {
-            if nch == 2 {
+            if main_ch <= 2 {
                 (l, r) = (sample(0), sample(1));
             } else {
-                for (c, (gl, gr)) in fold.iter().enumerate().take(nch) {
+                for (c, (gl, gr)) in fold.iter().enumerate().take(main_ch) {
                     let v = sample(c);
                     l += v * gl;
                     r += v * gr;

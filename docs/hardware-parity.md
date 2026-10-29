@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (MIDI input, output, thru, recording, beat clock and MTC out) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (MIDI devices; same-device duplex, record offset, low-latency monitoring) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 A DAW is judged by how it drives audio interfaces, MIDI gear, control surfaces and sync. This is
 SoundCraft's weakest dimension. Ours is measured from `crates/playback` (cpal, and midir for MIDI
@@ -19,13 +19,13 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Choose playback device | ✅ Playback Engine | 🟡 Setup › Playback Engine (not yet verified on macOS) | ✅ Setup › Playback Engine (WASAPI, ASIO) | 🟡 (not yet verified) | 🟡 (not yet verified) | ❌ |
 | Choose input device | ✅ | 🟡 Setup › Playback Engine (not yet verified on macOS) | ✅ (WASAPI, ASIO) | 🟡 (not yet verified) | ❌ no recording | ❌ |
 | Buffer size (32–2048) | ✅ | 🟡 device buffer when the driver allows it (not yet verified); mix in 512-sample blocks | 🟡 device buffer 16–8192 (verified 128 on ASIO, 256 on WASAPI); mix in 512-sample blocks | 🟡 (not yet verified) | 🟡 | ❌ |
-| Duplex stream on one clock | ✅ | ❌ separate input/output streams | ❌ | ❌ | ❌ | ❌ |
-| Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 multichannel output in order; no per-channel map | 🟡 | 🟡 | 🟡 | ❌ |
-| Low-latency monitoring | ✅ | ❌ (`options.low_latency_monitoring` is a stored flag) | ❌ | ❌ | ❌ | ❌ |
-| Latency reporting and record offset compensation | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Duplex stream on one clock | ✅ | 🟡 same device, rate and buffer; two cpal callbacks | 🟡 | 🟡 | 🟡 | ❌ |
+| Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 named paths and channel lists, per track | 🟡 | 🟡 | 🟡 | 🟡 |
+| Low-latency monitoring | ✅ | 🟡 backlog trim; LLM bypasses inserts and PDC on monitored tracks | 🟡 | 🟡 | 🟡 | 🟡 |
+| Latency reporting and record offset compensation | ✅ | 🟡 driver timestamps, else two buffers, plus a user offset | 🟡 | 🟡 | 🟡 | 🟡 |
 | Sample rate follows the session; resample when it can't | ✅ (switches device) | 🟡 resamples (input pitch bug fixed, #28) | 🟡 | 🟡 | 🟡 | 🟡 |
 | Avid HDX / HD Native DSP, Hybrid Engine DSP mode | ✅ | ❌ (out of reach: Avid hardware) | ❌ | ❌ | ❌ | ❌ |
-| Disk allocation / record to disk | ✅ | ❌ recording into RAM (PR #84) | ❌ | ❌ | ❌ | ❌ |
+| Disk allocation / record to disk | ✅ | 🟡 records to WAV (upstream #84); playback still whole-file RAM | 🟡 | 🟡 | ❌ no recording | ❌ |
 
 ## MIDI
 
@@ -73,6 +73,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-29 | major | MIDI input and output devices, live play-through, recording, beat clock and MTC out |
+| 2026-10-29 | minor | Same-device duplex clock, named input/output channel maps, record-offset compensation, low-latency monitoring. Record-to-disk was already in tree |
 | 2026-10-13 | trivial | bounces of a bus fed by an aux compensate its latency (#246) |
 | 2026-10-12 | minor | Audio device settings: system, output, input, sample rate and buffer size; opt-in ASIO |
 | 2026-10-10 | major | Created: audit of audio interface, MIDI, control-surface, sync and performance support against Pro Tools 2026.4.1 |

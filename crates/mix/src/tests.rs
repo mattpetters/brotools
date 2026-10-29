@@ -4,7 +4,7 @@
 
 use super::*;
 use soundcraft_audio_io::AudioBuffer;
-use soundcraft_model::{Insert, SourceAudio, SourceId};
+use soundcraft_model::{InputPath, Insert, OutputPath, SourceAudio, SourceId};
 use std::sync::Arc;
 
 fn synth_session(level_db: f32) -> Session {
@@ -930,6 +930,60 @@ fn a_plugins_bogus_latency_is_capped() {
     }
     render_block(&mut eng, &s, 0);
     assert_eq!((eng.track_latency, eng.latency), (MAX_LATENCY, 2 * MAX_LATENCY));
+}
+
+#[test]
+fn hardware_output_path_lands_on_its_channels() {
+    let mut s = Session::default();
+    s.outputs.push(OutputPath::new("Out 3-4", 2, ChannelFormat::Stereo));
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let buf = AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.2; 512], vec![0.4; 512]] };
+    s.pool.insert(SourceId(901), Arc::new(SourceAudio::new(buf)));
+    let id = s.new_clip_id();
+    let tr = s.track_mut(t).unwrap();
+    tr.playlist_mut().unwrap().clips.push(Clip::audio(id, "hw", SourceId(901), 0, 0, 512));
+    tr.mixer.output = Route::Hardware("Out 3-4".into());
+    let mut eng = MixEngine::new(48_000.0, 512);
+    let mut out = vec![vec![0.0; 512]; 4];
+    eng.render(&s, 0, 512, &mut out);
+    assert!(out[0].iter().all(|x| x.abs() < 1e-6), "main left stays empty");
+    assert!(out[1].iter().all(|x| x.abs() < 1e-6), "main right stays empty");
+    assert!((out[2][100] - 0.2).abs() < 1e-5, "{}", out[2][100]);
+    assert!((out[3][100] - 0.4).abs() < 1e-5, "{}", out[3][100]);
+}
+
+#[test]
+fn named_input_path_monitors_that_channel() {
+    let (mut s, t) = session_with_dc(0.5, 512);
+    s.inputs.push(InputPath { name: "Guitar".into(), first_channel: 2, format: ChannelFormat::Mono, channels: vec![2], active: true });
+    s.track_mut(t).unwrap().mixer.input = Route::Hardware("Guitar".into());
+    s.track_mut(t).unwrap().mixer.input_monitor = true;
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.0; 512], vec![0.0; 512], vec![0.25; 512]];
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    let expect = 0.25 * std::f32::consts::FRAC_1_SQRT_2;
+    assert!((out[0][100] - expect).abs() < 1e-3, "{}", out[0][100]);
+}
+
+#[test]
+fn low_latency_monitoring_does_not_wait_for_other_plugins() {
+    let (mut s, t) = session_with_dc(0.0, 512);
+    s.track_mut(t).unwrap().mixer.input_monitor = true;
+    let other = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    s.track_mut(other).unwrap().mixer.inserts[0] = Some(Insert::new("maximizer"));
+    s.track_mut(other).unwrap().mixer.mute = true;
+    let latency = soundcraft_dsp::create("maximizer").unwrap().latency();
+    assert!(latency > 16 && latency < 400, "{latency}");
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.25; 512]];
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    assert!(out[0][0].abs() < 1e-4, "delay compensation holds the monitor, got {}", out[0][0]);
+    assert!(out[0][latency] > 0.05, "the input emerges after the plugin delay");
+    s.edit.set_flag("options.low_latency_monitoring", true);
+    eng.render(&s, 512, 512, &mut out);
+    assert!(out[0][0] > 0.05, "low latency monitoring plays the input in this block, got {}", out[0][0]);
 }
 
 #[test]
