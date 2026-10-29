@@ -208,6 +208,9 @@ pub fn tree() -> Vec<MenuNode> {
         insert_path(&mut roots, line);
     }
     insert_path(&mut roots, "Window > Reset Panel Layout");
+    // Not in the incumbent catalog. File > Open Session also reads these files; this item is the
+    // explicit import, and it returns the fidelity report.
+    insert_path(&mut roots, "File > Import > Pro Tools Session...");
     // Not in the observed catalog either; Pro Tools lists it right under Identify Sync Point.
     if let Some(clip) = roots.iter_mut().find(|n| n.label == "Clip") {
         let at = clip.children.iter().position(|n| n.label == "Identify Sync Point").map_or(clip.children.len(), |i| i + 1);
