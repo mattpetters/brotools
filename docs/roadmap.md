@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (AAF and DAWproject subset; OMF and `.ptx` remain) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (MIDI devices and duplex I/O; AAF and DAWproject subset) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -10,8 +10,8 @@ Hours are Opus 5.5 agent-hours.
 
 1. **Merge or close the open bug-fix PRs** (#123–#134, #146, #148, #75) and fix the rest of the
    correctness backlog (G-04). ≈ 15–25 h.
-2. **Audio interface basics** (G-01): device selection, buffer size, duplex stream, ASIO. ≈ 25–40 h.
-3. **MIDI devices** (G-02): input to armed tracks and instruments, output, thru, clock. ≈ 20–35 h.
+2. **Audio interface basics** (G-01): device, rate and buffer choice and record-to-disk are in. Left: one duplex callback, a mix block that follows the device, on-device verification. ≈ 15–25 h.
+3. **MIDI devices** (G-02): input, output, thru, recording, beat clock and MTC out are in. Left: a hardware pass on macOS and Windows, MTC chase, MMC. ≈ 8–15 h.
 4. **macOS plugin hosting** (G-05): library-validation entitlement now (#153), then AU editors. ≈ 15–25 h.
 5. **A PR CI that runs `cargo xtask ci`** on Linux, macOS and Windows (G-14). ≈ 5–10 h.
 
@@ -23,15 +23,17 @@ main platform). Any **no** keeps SoundCraft **pre-alpha**, and those rows are th
 
 | Workflow | Works end to end? | Evidence | Hours to pass |
 |---|---|---|---:|
-| Record audio from a chosen interface at a chosen buffer size, monitor, punch, keep the takes | **no** | Default output and input devices only. Fixed 512-sample block. Separate input and output streams. `setup.playback_engine` params ignored by playback. Takes held in RAM until stop (PR #84). No input device choice (#42). | 35–55 |
-| Record MIDI from a controller and play it back through an instrument | **no** | Playback of drawn and imported MIDI works. No MIDI device layer at all, so nothing can be recorded and instruments can't be played live (G-02). | 20–35 |
+| Record audio from a chosen interface at a chosen buffer size, monitor, punch, keep the takes | **no** | Device, rate and buffer choice exist. Record and playback share one device when the input is unset, with record-offset compensation and low-latency monitoring, and takes stream to disk. Still two cpal callbacks, a fixed 512-sample mix block, and no on-device verification. | 15–25 |
+| Record MIDI from a controller and play it back through an instrument | **partial** | Devices, live play-through, recording (punch, loop, merge), hardware output, beat clock and MTC out. Tested with injected events. Not yet played on a physical keyboard on macOS (the gate's platform) or Windows. | 8–15 |
 | Edit: select, trim, fade, comp playlists, Slip/Shuffle/Grid | yes (rough) | Every Edit menu command; property-tested with undo; open bugs #3, #5, #140 don't block the workflow | — |
 | Mix with built-in and third-party plugins, sends, busses, automation | partial (passes on CLAP/AU) | 27 built-in processors; CLAP and AU host on the signed macOS build, but its missing entitlement blocks third-party VST3 (#153). No AU plugin windows yet; VST3 windows on macOS only | 1–2 (entitlement) |
 | Bounce mix and stems; save and reopen the session | yes (rough) | WAV/BWF/AIFF/FLAC bounce, stems, `.scraft` save/reopen with plugin state; bugs #59, #103 in bus bounce and aux latency (PRs open) | — |
 | Exchange a session with Pro Tools or a picture editor | partial | AAF and DAWproject: tracks, clips, offsets, fades, clip gain, volume/pan, markers, embedded or linked WAV. No OMF, no `.ptx` (G-03) | 20–40 |
 
-**Result: pre-alpha.** Interface recording and MIDI devices still fail. Interchange is partial
-(AAF and DAWproject; not OMF or `.ptx`). Passing the two failing workflows is ~55–90 h.
+**Result: pre-alpha.** Audio recording still fails (two cpal callbacks, a fixed 512-sample mix
+block, unverified on hardware). MIDI recording is partial until a physical controller is confirmed
+on macOS. Session exchange is partial (AAF and DAWproject; not OMF or `.ptx`). Passing them is
+~45–80 h.
 
 ## Milestones
 
@@ -41,7 +43,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 |---|---|---|---:|
 | M0–M4 | Workspace, gates, model, I/O, DSP, mix engine, command engine, Edit/Mix UI, playback, metering, plugins, bounce | ✅ | — |
 | M5 | Editing depth (tools, modes, playlists, fades, comping, clip groups) | ✅ (bugs open, G-04) | in G-04 |
-| M6 | Recording, punch, loop record, monitoring | 🟡 first cut; device choice and record-to-disk missing | 40–60 |
+| M6 | Recording, punch, loop record, monitoring | 🟡 device choice and record-to-disk exist; one duplex callback and a device-sized mix block remain | 15–25 |
 | M7 | MIDI and notation editing | 🟡 | 50–80 |
 | M8 | CLI, control channel, MCP, agent acceptance test | ✅ | 3 |
 | M9 | AudioSuite breadth ✅, Elastic Audio 🟡, Beat Detective 🟡 | 🟡 | 40–60 |
@@ -89,6 +91,9 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | Session exchange is partial: AAF and DAWproject subset. OMF and `.ptx` remain (~20–40 h) |
+| 2026-10-29 | major | MIDI devices: input, output, live play-through, recording, beat clock and MTC out. The record-from-a-controller gate row is partial |
+| 2026-10-29 | trivial | Alpha-gate evidence: same-device duplex, record offset and record-to-disk exist; the row stays no until hardware verification and a mix block that follows the device |
 | 2026-10-24 | trivial | 27 built-in processors, as the plugin registry holds; the sampler (#108) is no longer listed under plugin essentials |
 | 2026-10-14 | trivial | M8: reject oversized MCP batches before execution (#460) |
 | 2026-10-10 | minor | Added the alpha gate (3 of 6 core workflows fail → pre-alpha) |

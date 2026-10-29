@@ -3,8 +3,12 @@ use super::{MeterDisplay, OutputTrouble, Player, SoundApp, Trouble};
 impl SoundApp {
     /// Whether the meters are live: while playing, and while armed or input-monitored tracks are heard.
     pub(crate) fn meters_live(&self) -> bool {
-        self.engine.transport.playing
-            || (self.recorder.is_some() && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm))
+        if self.engine.transport.playing {
+            return true;
+        }
+        let s = self.engine.session();
+        let armed = s.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        (self.recorder.is_some() && armed) || s.tracks.iter().any(|t| soundcraft_mix::hears_live_midi(s, t))
     }
 
     /// Reopens the audio devices with `cfg` (Setup › Playback Engine › Apply), keeping the
@@ -28,7 +32,9 @@ impl SoundApp {
         self.recorder_failed = false;
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
         player.locate(at);
+        player.set_midi(self.midi_hw.link());
         self.player = Some(player);
+        self.midi_attached = true;
         Ok(())
     }
 
@@ -37,7 +43,20 @@ impl SoundApp {
         if self.recorder.is_some() || self.recorder_failed || self.player.is_none() {
             return;
         }
-        match soundcraft_playback::record::Recorder::open_with(&self.ui.audio) {
+        let mut cfg = self.ui.audio.clone();
+        if cfg.sample_rate.is_none()
+            && let Some(rate) = self.player.as_ref().map(|p| p.device_rate).filter(|rate| *rate > 0)
+        {
+            cfg.sample_rate = Some(rate);
+        }
+        if let Some(name) = soundcraft_playback::input_device_name(
+            cfg.input.as_deref(),
+            self.player.as_ref().map(|p| p.device_name.as_str()).unwrap_or(""),
+            self.player.as_ref().is_none_or(|p| p.silent),
+        ) {
+            cfg.input = Some(name);
+        }
+        match soundcraft_playback::record::Recorder::open_with(&cfg) {
             Ok(r) => {
                 if let Some(p) = &self.player {
                     p.set_input(std::sync::Arc::clone(&r.monitor));
@@ -121,7 +140,10 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
-        self.player = Some(Player::with_config(self.engine.session_arc(), &self.ui.audio));
+        let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        player.set_midi(self.midi_hw.link());
+        self.player = Some(player);
+        self.midi_attached = true;
     }
 }
 

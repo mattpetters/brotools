@@ -5,7 +5,7 @@ use super::{CommandSpec, always, bad, command_specs, i64_or, str_param, track_pa
 use super::more_util::{set_text, store_value, text, toggle_flag, values_with_prefix};
 use crate::{Engine, EngineError, Result, cmd};
 use serde_json::{Value, json};
-use soundcraft_model::{BusId, ChannelFormat, ClipContent, OutputPath, Route, Session, SourceId, TrackId, TrackKind};
+use soundcraft_model::{BusId, ChannelFormat, ClipContent, InputPath, OutputPath, Route, Session, SourceId, TrackId, TrackKind};
 use soundcraft_time::Timecode;
 use std::path::Path;
 
@@ -56,9 +56,18 @@ pub fn specs() -> Vec<CommandSpec> {
             "I/O...",
             ["Setup"],
             None,
-            "{action?: list|create_bus|rename_bus|delete_bus|create_output|rename_output|delete_output, name?, new_name?, format?: stereo, first_channel?: 0}",
+            "{action?: list|create_bus|rename_bus|delete_bus|create_input|rename_input|delete_input|create_output|rename_output|delete_output|set_channels, name?, new_name?, format?: stereo, first_channel?: 0, kind?: input|output, channels?: [0-based], active?: bool}",
             always,
             io_setup
+        ),
+        cmd!(
+            noundo "setup.record_offset",
+            "Record Offset...",
+            ["Setup"],
+            None,
+            "{samples?: i64, compensate?: bool} — user record offset; compensate adds the device's input and output latency when a take is placed",
+            always,
+            record_offset
         ),
         cmd!(
             "setup.current_timecode",
@@ -104,7 +113,18 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"enabled": s.edit.flag("midi.beat_clock"), "offset": s.edit.value("midi.beat_clock.offset", 0.0), "destination": text(&s.edit, "midi.beat_clock.destination")}))
         }),
         cmd!(noundo "setup.midi_input_filter", "MIDI Input Filter...", ["Setup", "MIDI"], None, "{filter?: [notes|pitch_bend|mono_aftertouch|poly_aftertouch|program|cc|sysex|realtime], allow?: [...]} — filtered kinds are not recorded", always, midi_filter),
-        cmd!(noundo "setup.midi_input_devices", "MIDI Input Devices...", ["Setup", "MIDI"], None, "{enable?: [names], disable?: [names]}", always, midi_inputs),
+        cmd!(noundo "setup.midi_input_devices", "MIDI Input Devices...", ["Setup", "MIDI"], None, "{enable?: [names], disable?: [names], clear?: bool} — with no names stored, every input is enabled", always, |e, p| midi_ports(e, p, "midi.input.")),
+        cmd!(noundo "setup.midi_output_devices", "MIDI Output Devices", [], None, "{enable?: [names], disable?: [names], clear?: bool} — with no names stored, every output is enabled", always, |e, p| midi_ports(e, p, "midi.output.")),
+        cmd!(noundo "setup.mtc", "MIDI Time Code...", ["Setup", "MIDI"], None, "{enabled?: bool, destination?: name} — quarter-frame MTC while playing", always, |e, p| {
+            let s = e.session_mut();
+            if let Some(v) = p.get("enabled").and_then(Value::as_bool) {
+                s.edit.set_flag("midi.mtc", v);
+            }
+            if let Some(d) = str_param(p, "destination") {
+                set_text(&mut s.edit, "midi.mtc.destination", Some(d));
+            }
+            Ok(json!({"enabled": s.edit.flag("midi.mtc"), "destination": text(&s.edit, "midi.mtc.destination")}))
+        }),
         cmd!(noundo "setup.transcription_settings", "Transcription Settings...", ["Setup"], None, "{enabled?: bool, language?: 'en'}", always, |e, p| {
             let s = e.session_mut();
             if let Some(v) = p.get("enabled").and_then(Value::as_bool) {
@@ -218,7 +238,114 @@ fn peripherals(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn io_state(s: &Session) -> Value {
-    json!({"busses": s.busses, "outputs": s.outputs})
+    json!({"busses": s.busses, "inputs": s.inputs, "outputs": s.outputs})
+}
+
+fn unroute_hardware(s: &mut Session, name: &str, input: bool) {
+    for t in &mut s.tracks {
+        let slot = if input { &mut t.mixer.input } else { &mut t.mixer.output };
+        if matches!(slot, Route::Hardware(n) if n.eq_ignore_ascii_case(name)) {
+            *slot = Route::None;
+        }
+    }
+}
+
+fn rename_hardware(s: &mut Session, old: &str, new: &str, input: bool) {
+    for t in &mut s.tracks {
+        let slot = if input { &mut t.mixer.input } else { &mut t.mixer.output };
+        if matches!(slot, Route::Hardware(n) if n.eq_ignore_ascii_case(old)) {
+            *slot = Route::Hardware(new.to_string());
+        }
+    }
+}
+
+fn edit_channels(channels: &mut Vec<u16>, first: &mut u16, active: &mut bool, p: &Value, id: &str) -> Result<()> {
+    if p.get("channels").is_none() && p.get("active").is_none() {
+        return Err(bad(id, "`channels` or `active` required"));
+    }
+    if let Some(list) = p.get("channels").and_then(Value::as_array) {
+        let mut out = Vec::new();
+        for v in list.iter().take(16) {
+            let Some(n) = v.as_u64() else {
+                return Err(bad(id, "channels are 0-based integers"));
+            };
+            if n > 1023 {
+                return Err(bad(id, "channel must be 0..=1023"));
+            }
+            out.push(u16::try_from(n).unwrap_or(1023));
+        }
+        if out.is_empty() {
+            return Err(bad(id, "a path needs at least one channel"));
+        }
+        *channels = out;
+        if let Some(c) = channels.first().copied() {
+            *first = c;
+        }
+    }
+    if let Some(v) = p.get("active").and_then(Value::as_bool) {
+        *active = v;
+    }
+    Ok(())
+}
+
+fn io_paths(s: &mut Session, id: &str, action: &str, name: &str, new_name: Option<String>, format: ChannelFormat, p: &Value) -> Result<()> {
+    match action {
+        "create_input" => {
+            if s.input_by_name(name).is_some() {
+                return Err(bad(id, format!("an input named `{name}` exists")));
+            }
+            let first = i64_or(p, "first_channel", 0).clamp(0, 1023) as u16;
+            s.inputs.push(InputPath::new(name, first, format));
+        }
+        "rename_input" => {
+            let to = new_name.ok_or_else(|| bad(id, "`new_name` required"))?;
+            if s.input_by_name(&to).is_some() {
+                return Err(bad(id, format!("an input named `{to}` exists")));
+            }
+            {
+                let path = s.inputs.iter_mut().find(|p| p.name.eq_ignore_ascii_case(name)).ok_or_else(|| bad(id, format!("no input `{name}`")))?;
+                path.name = to.clone();
+            }
+            rename_hardware(s, name, &to, true);
+        }
+        "delete_input" => {
+            let before = s.inputs.len();
+            s.inputs.retain(|p| !p.name.eq_ignore_ascii_case(name));
+            if s.inputs.len() == before {
+                return Err(bad(id, format!("no input `{name}`")));
+            }
+            unroute_hardware(s, name, true);
+        }
+        "set_channels" => {
+            let kind = str_param(p, "kind").unwrap_or("input");
+            if kind == "input" {
+                let path = s.inputs.iter_mut().find(|p| p.name.eq_ignore_ascii_case(name)).ok_or_else(|| bad(id, format!("no input `{name}`")))?;
+                edit_channels(&mut path.channels, &mut path.first_channel, &mut path.active, p, id)?;
+            } else if kind == "output" {
+                let path = s.outputs.iter_mut().find(|p| p.name.eq_ignore_ascii_case(name)).ok_or_else(|| bad(id, format!("no output `{name}`")))?;
+                edit_channels(&mut path.channels, &mut path.first_channel, &mut path.active, p, id)?;
+            } else {
+                return Err(bad(id, "kind is input or output"));
+            }
+        }
+        other => return Err(bad(id, format!("unknown action `{other}`"))),
+    }
+    Ok(())
+}
+
+fn record_offset(e: &mut Engine, p: &Value) -> Result<Value> {
+    let s = e.session_mut();
+    if let Some(n) = p.get("samples").and_then(Value::as_i64) {
+        s.edit.values.insert("engine.record_offset".into(), n.clamp(-2_000_000, 2_000_000) as f64);
+    } else if let Some(n) = p.get("samples").and_then(Value::as_f64).filter(|v| v.is_finite()) {
+        s.edit.values.insert("engine.record_offset".into(), n.clamp(-2_000_000.0, 2_000_000.0).round());
+    }
+    if let Some(v) = p.get("compensate").and_then(Value::as_bool) {
+        s.edit.values.insert("engine.record_compensate".into(), if v { 1.0 } else { 0.0 });
+    }
+    let samples = s.edit.value("engine.record_offset", 0.0);
+    let compensate = s.edit.value("engine.record_compensate", 1.0) >= 0.5;
+    Ok(json!({"samples": samples, "compensate": compensate}))
 }
 
 /// Disconnect every track input, output and send that used bus `bid`.
@@ -276,8 +403,9 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
                 return Err(bad(id, format!("an output named `{name}` exists")));
             }
             let first = i64_or(p, "first_channel", 0).clamp(0, 1023) as u16;
-            s.outputs.push(OutputPath { name, first_channel: first, format });
+            s.outputs.push(OutputPath::new(name, first, format));
         }
+        "create_input" | "rename_input" | "delete_input" | "set_channels" => io_paths(s, id, action, &name, new_name, format, p)?,
         "rename_output" => {
             let to = new_name.ok_or_else(|| bad(id, "`new_name` required"))?;
             let o = s.outputs.iter_mut().find(|o| o.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no output `{name}`")))?;
@@ -294,6 +422,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             if s.outputs.len() == before {
                 return Err(bad(id, format!("no output `{name}`")));
             }
+            unroute_hardware(s, &name, false);
         }
         other => return Err(bad(id, format!("unknown action `{other}`"))),
     }
@@ -389,22 +518,32 @@ fn midi_filter(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"filtered": filtered}))
 }
 
-fn device_key(name: &str) -> String {
+fn port_key(prefix: &str, name: &str) -> String {
     let n: String = name.chars().filter(|c| !c.is_control() && *c != '=').take(64).collect();
-    format!("midi.input.{}", n.trim())
+    format!("{prefix}{}", n.trim())
 }
 
-fn midi_inputs(e: &mut Engine, p: &Value) -> Result<Value> {
+/// Allow-list of MIDI port names under `prefix` (`midi.input.` or `midi.output.`).
+/// An empty list means every port is enabled. `clear` returns to that.
+fn midi_ports(e: &mut Engine, p: &Value, prefix: &str) -> Result<Value> {
     let s = e.session_mut();
-    for (key, on) in [("enable", true), ("disable", false)] {
-        for n in p.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).take(64).collect::<Vec<_>>()).unwrap_or_default() {
-            if !n.trim().is_empty() {
-                s.edit.set_flag(&device_key(n), on);
-            }
+    if p.get("clear").and_then(Value::as_bool) == Some(true) {
+        s.edit.flags.retain(|f| !f.starts_with(prefix));
+    }
+    for n in names(p, "disable") {
+        s.edit.set_flag(&port_key(prefix, n), false);
+    }
+    for n in names(p, "enable") {
+        if !n.trim().is_empty() {
+            s.edit.set_flag(&port_key(prefix, n), true);
         }
     }
-    let enabled: Vec<&str> = s.edit.flags.iter().filter_map(|f| f.strip_prefix("midi.input.")).collect();
+    let enabled: Vec<&str> = s.edit.flags.iter().filter_map(|f| f.strip_prefix(prefix)).collect();
     Ok(json!({"enabled": enabled}))
+}
+
+fn names<'a>(p: &'a Value, key: &str) -> Vec<&'a str> {
+    p.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).take(64).collect()).unwrap_or_default()
 }
 
 fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -553,6 +692,18 @@ mod tests {
         }));
         e.execute("setup.io", &json!({"action": "create_output", "name": "Out 3-4", "first_channel": 2})).unwrap();
         assert_eq!(e.session().outputs.len(), 2);
+        e.execute("setup.io", &json!({"action": "create_input", "name": "Guitar", "format": "mono", "first_channel": 3})).unwrap();
+        e.execute("setup.io", &json!({"action": "set_channels", "kind": "input", "name": "Guitar", "channels": [3]})).unwrap();
+        let id = e.execute("track.new", &json!({"name": "Gtr", "format": "mono"})).unwrap()["tracks"][0].as_u64().unwrap();
+        e.execute("track.input", &json!({"tracks": [id], "input": "Guitar", "create_bus": false})).unwrap();
+        e.execute("mix.record_arm", &json!({"tracks": [id], "value": true})).unwrap();
+        let plan = crate::io::plan_takes(&e, std::path::Path::new("/tmp"), 8);
+        assert_eq!(plan.iter().find(|p| p.0 == soundcraft_model::TrackId(id)).map(|p| p.1.clone()), Some(vec![3]));
+        e.execute("setup.io", &json!({"action": "rename_input", "name": "Guitar", "new_name": "Amp"})).unwrap();
+        assert!(matches!(&e.session().track(soundcraft_model::TrackId(id)).unwrap().mixer.input, Route::Hardware(n) if n == "Amp"));
+        let off = e.execute("setup.record_offset", &json!({"samples": 64, "compensate": false})).unwrap();
+        assert_eq!(off["samples"], 64.0);
+        assert_eq!(off["compensate"], false);
         assert!(e.execute("setup.io", &json!({"action": "nope", "name": "x"})).is_err());
         assert!(e.can_undo());
     }

@@ -814,13 +814,7 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
         .iter()
         .filter(|t| t.mixer.record_arm && t.kind == TrackKind::Audio && !t.inactive)
         .map(|t| {
-            let first = match &t.mixer.input {
-                soundcraft_model::Route::Hardware(h) => {
-                    h.trim_start_matches("In ").split(['-', ' ']).next().and_then(|n| n.parse::<usize>().ok()).map_or(0, |n| n.saturating_sub(1))
-                }
-                _ => 0,
-            };
-            let inputs = (0..t.channels()).map(|k| first.saturating_add(k) % input_channels.max(1)).collect();
+            let inputs = s.hardware_input_channels(&t.mixer.input, t.channels(), input_channels);
             let file = |n: usize| dir.join("Audio Files").join(format!("{}_{n:02}.wav", sanitize_name(&t.name)));
             let path = (take_no..take_no + 1_000).map(file).find(|p| !p.exists()).unwrap_or_else(|| file(take_no));
             (t.id, inputs, path)

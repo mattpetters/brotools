@@ -1,8 +1,11 @@
+use super::midi_hw::MidiLink;
+use super::midi_sync::{BeatClock, MtcGen, RawMidi, StampedMidi, destination_port, sample_offset};
 use super::{
     Arc, AtomicBool, BLOCK, BTreeMap, Cmd, HashMap, HashSet, MAX_CHANNELS, MeterSnapshot, MixEngine, OLD_SESSIONS, Ordering, OutputTrouble, Plugin,
     PluginEditor, PluginStateReader, PluginStates, PreparedInstance, Range, Receiver, Samples, Sender, Session, Shared, SyncSender, TrackId,
-    itu_stereo_fold, main_channels, record, sync_channel,
+    itu_stereo_fold, main_channels, playback_channels, record, sync_channel,
 };
+use soundcraft_mix::{MidiOut, hears_live_midi};
 
 /// How the audio output is doing, for the UI.
 #[derive(Default)]
@@ -13,6 +16,8 @@ pub(crate) struct Fault {
     pub(crate) gone: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
+    /// Output latency the driver last reported, in frames (0 when it has not said).
+    pub(crate) output_latency: std::sync::atomic::AtomicU32,
     /// The UI has been told.
     reported: AtomicBool,
 }
@@ -71,8 +76,10 @@ pub(crate) struct AudioState {
     playing: bool,
     end: Option<Samples>,
     looped: Option<Range>,
-    /// Rendered frames waiting to be consumed (planar, main channels) and the fractional read index.
+    /// Rendered frames waiting to be consumed (planar) and the fractional read index.
     pending: Vec<Vec<f32>>,
+    /// Main-mix width. Hardware channels past this are copied, not folded into stereo.
+    main_ch: usize,
     /// Stereo fold-down gains per main channel (used when the device has fewer channels).
     fold: [(f32, f32); MAX_CHANNELS],
     pub(crate) pending_len: usize,
@@ -80,6 +87,18 @@ pub(crate) struct AudioState {
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
+    midi: Option<MidiLink>,
+    raw_midi: Vec<RawMidi>,
+    clock: BeatClock,
+    mtc: MtcGen,
+    clock_buf: Vec<(u32, u8)>,
+    mtc_buf: Vec<(u32, u8, u8)>,
+    /// Timeline position recording started at, and samples recorded since (monotonic, so a loop
+    /// pass keeps going instead of wrapping).
+    record_origin: Samples,
+    record_ran: i64,
+    /// The stop command arrived in this callback: still stamp the messages already queued.
+    record_tail: bool,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
@@ -106,7 +125,8 @@ impl AudioState {
         garbage: Sender<Vec<Box<dyn Plugin>>>,
     ) -> Self {
         let sr = session.sample_rate.as_f64() as f32;
-        let nch = main_channels(&session);
+        let main_ch = main_channels(&session);
+        let nch = playback_channels(&session);
         AudioState {
             garbage,
             old_sessions: None,
@@ -120,11 +140,21 @@ impl AudioState {
             end: None,
             looped: None,
             pending: vec![vec![0.0; BLOCK]; nch],
+            main_ch,
             pending_len: 0,
             read: 0.0,
             device_rate,
             input: None,
             recording: false,
+            midi: None,
+            raw_midi: Vec::new(),
+            clock: BeatClock::default(),
+            mtc: MtcGen::default(),
+            clock_buf: Vec::new(),
+            mtc_buf: Vec::new(),
+            record_origin: 0,
+            record_ran: 0,
+            record_tail: false,
             unsent: MeterSnapshot::default(),
             forget_shared: Vec::new(),
         }
@@ -144,7 +174,21 @@ impl AudioState {
                     }
                     self.forget_meters();
                 }
-                Cmd::Recording(r) => self.recording = r,
+                Cmd::Recording(r) => {
+                    if r && !self.recording {
+                        self.record_origin = self.pos;
+                        self.record_ran = 0;
+                        if let Some(link) = &self.midi {
+                            link.record_end.store(self.pos, Ordering::Relaxed);
+                        }
+                    }
+                    self.record_tail = !r && self.recording;
+                    self.recording = r;
+                }
+                Cmd::Midi(link) => {
+                    self.mix.midi_ports = std::sync::Arc::clone(&link.ports);
+                    self.midi = Some(link);
+                }
                 Cmd::Session(s, instances) => {
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
@@ -152,8 +196,9 @@ impl AudioState {
                         let _ = self.garbage.send(old.drain_plugins());
                     }
                     self.mix.adopt(instances);
-                    // The main format changed (a document edit, not steady state): resize.
-                    let nch = main_channels(&s);
+                    // The main format or hardware paths changed (a document edit, not steady state): resize.
+                    let nch = playback_channels(&s);
+                    self.main_ch = main_channels(&s);
                     if self.pending.len() != nch {
                         self.pending = vec![vec![0.0; BLOCK]; nch];
                         self.pending_len = 0;
@@ -173,6 +218,8 @@ impl AudioState {
                     self.playing = true;
                     self.pending_len = 0;
                     self.read = 0.0;
+                    self.clock = BeatClock::default();
+                    self.mtc.reset(from);
                     self.mix.reset();
                 }
                 Cmd::Stop => {
@@ -185,6 +232,7 @@ impl AudioState {
                     self.pos = at;
                     self.pending_len = 0;
                     self.read = 0.0;
+                    self.mtc.reset(at);
                     self.mix.reset();
                 }
             }
@@ -239,9 +287,17 @@ impl AudioState {
             }
             ring.pop_into(&mut self.mix.input, n, self.session.sample_rate.hz());
         }
+        self.drain_midi(n);
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
         self.mix.render(&self.session, self.pos, n, &mut self.pending);
+        self.send_midi(n);
+        if (self.recording || self.record_tail) && self.playing {
+            self.record_ran = self.record_ran.saturating_add(i64::try_from(n).unwrap_or(i64::MAX));
+            if let Some(link) = &self.midi {
+                link.record_end.store(self.record_origin.saturating_add(self.record_ran), Ordering::Relaxed);
+            }
+        }
         self.send_garbage();
         self.pending_len = n;
         self.publish_meters();
@@ -261,6 +317,86 @@ impl AudioState {
         }
     }
 
+    /// Throw away MIDI that arrived while nothing is listening, so arming a track later does not
+    /// play a burst of old notes.
+    fn drop_midi(&mut self) {
+        let Some(link) = &self.midi else { return };
+        self.raw_midi.clear();
+        link.input.drain(&mut self.raw_midi);
+        self.raw_midi.clear();
+    }
+
+    /// Move device messages into this block: live play at a sample offset, and the take when recording.
+    fn drain_midi(&mut self, frames: usize) {
+        self.mix.midi_in.clear();
+        let Some(link) = &self.midi else { return };
+        self.mix.midi_ports = std::sync::Arc::clone(&link.ports);
+        self.raw_midi.clear();
+        link.input.drain(&mut self.raw_midi);
+        let now = link.now_us();
+        let sr = self.session.sample_rate.hz();
+        for ev in &self.raw_midi {
+            let offset = sample_offset(ev.us, now, frames, sr);
+            if self.mix.midi_in.len() < 256 {
+                self.mix.midi_in.push(soundcraft_mix::LiveMidi { offset, port: ev.port, status: ev.status, data1: ev.data1, data2: ev.data2 });
+            }
+            if (self.recording || self.record_tail) && self.playing {
+                let at = self.stamp(offset);
+                link.record.push(StampedMidi { at, port: ev.port, status: ev.status, data1: ev.data1, data2: ev.data2 });
+            }
+        }
+    }
+
+    fn stamp(&self, offset: u32) -> Samples {
+        let off = i64::from(offset);
+        if self.looped.is_some() { self.record_origin.saturating_add(self.record_ran).saturating_add(off) } else { self.pos.saturating_add(off) }
+    }
+
+    /// Clip MIDI, thru, beat clock and MTC leave on the output queue. The sender thread does the driver call.
+    fn send_midi(&mut self, frames: usize) {
+        self.emit_clock(frames);
+        self.emit_mtc(frames);
+        let Some(output) = self.midi.as_ref().map(|l| std::sync::Arc::clone(&l.output)) else { return };
+        for ev in self.mix.midi_out.drain(..) {
+            output.push(ev);
+        }
+        if let Some(port) = self.sync_port("midi.beat_clock.destination=", self.session.edit.flag("midi.beat_clock")) {
+            for (offset, status) in self.clock_buf.drain(..) {
+                output.push(MidiOut { offset, port, status, data1: 0, data2: 0 });
+            }
+        } else {
+            self.clock_buf.clear();
+        }
+        if let Some(port) = self.sync_port("midi.mtc.destination=", self.session.edit.flag("midi.mtc")) {
+            for (offset, status, data) in self.mtc_buf.drain(..) {
+                output.push(MidiOut { offset, port, status, data1: data, data2: 0 });
+            }
+        } else {
+            self.mtc_buf.clear();
+        }
+    }
+
+    fn emit_clock(&mut self, frames: usize) {
+        let playing = self.playing && self.session.edit.flag("midi.beat_clock");
+        let tick = self.session.tempo.samples_to_ticks(self.pos, self.session.sample_rate);
+        let bpm = self.session.tempo.tempo_at_tick(tick);
+        self.clock.take(playing, self.pos, frames, bpm, self.session.sample_rate.as_f64(), &mut self.clock_buf);
+    }
+
+    fn emit_mtc(&mut self, frames: usize) {
+        let playing = self.playing && self.session.edit.flag("midi.mtc");
+        let when = super::midi_sync::MtcWhen { rate: self.session.frame_rate, sr: self.session.sample_rate, origin: self.session.timecode_start };
+        self.mtc.take(playing, self.pos, frames, when, &mut self.mtc_buf);
+    }
+
+    fn sync_port(&self, prefix: &str, enabled: bool) -> Option<u8> {
+        if !enabled {
+            return None;
+        }
+        let link = self.midi.as_ref()?;
+        destination_port(&self.session.edit.flags, prefix, &link.ports)
+    }
+
     /// Hand this block's meters to the UI without blocking: they are folded (max) into what the
     /// UI has not taken yet. If the UI holds the snapshot right now, they wait in `unsent`.
     fn publish_meters(&mut self) {
@@ -276,8 +412,11 @@ impl AudioState {
     pub(crate) fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
         let channels = channels.max(1);
-        let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        let audio_mon = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        let midi_mon = self.midi.is_some() && self.session.tracks.iter().any(|t| hears_live_midi(&self.session, t));
+        let monitoring = audio_mon || midi_mon;
         if !self.playing && !monitoring {
+            self.drop_midi();
             out.iter_mut().for_each(|x| *x = 0.0);
             self.unsent.silence();
             self.forget_meters();
@@ -312,23 +451,25 @@ impl AudioState {
                 let b = if i0 + 1 < self.pending_len { ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a) } else { a };
                 a * (1.0 - fr) + b * fr
             };
-            write_frame(frame, channels, nch, sounding, &self.fold, sample);
+            write_frame(frame, channels, self.main_ch, nch, sounding, &self.fold, sample);
             self.read += step;
         }
+        self.record_tail = false;
     }
 }
 
-/// Write one device frame from `nch` rendered channels: fold surround to stereo (a mono device
-/// averages the two sides), or copy the channels straight through. `sample(c)` is channel `c`.
-fn write_frame(frame: &mut [f32], channels: usize, nch: usize, sounding: bool, fold: &[(f32, f32)], sample: impl Fn(usize) -> f32) {
-    if channels < nch {
+/// Write one device frame. Surround folds only when the device is narrower than the main mix.
+/// Hardware channels past the main mix are copied when the device has them, and dropped when it
+/// does not — they are not folded into the stereo speakers.
+fn write_frame(frame: &mut [f32], channels: usize, main_ch: usize, nch: usize, sounding: bool, fold: &[(f32, f32)], sample: impl Fn(usize) -> f32) {
+    if channels < main_ch.max(1) {
         // Fold surround to stereo first; a mono device averages the two sides.
         let (mut l, mut r) = (0.0f32, 0.0f32);
         if sounding {
-            if nch == 2 {
+            if main_ch <= 2 {
                 (l, r) = (sample(0), sample(1));
             } else {
-                for (c, (gl, gr)) in fold.iter().enumerate().take(nch) {
+                for (c, (gl, gr)) in fold.iter().enumerate().take(main_ch) {
                     let v = sample(c);
                     l += v * gl;
                     r += v * gr;

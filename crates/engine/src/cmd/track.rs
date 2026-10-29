@@ -202,6 +202,15 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("track.input", "Track Input", [], None, "{tracks?, input: none|bus name|hardware name}", has_selection, |e, p| route(e, p, true)),
         cmd!("track.output", "Track Output", [], None, "{tracks?, output: main|none|bus name}", has_selection, |e, p| route(e, p, false)),
+        cmd!(
+            "track.midi_output",
+            "MIDI Output",
+            [],
+            None,
+            "{tracks?, output: none|MIDI:<channel>:<device>} — the hardware port a MIDI or instrument track sends to",
+            has_selection,
+            midi_output
+        ),
         cmd!("track.timebase", "Track Timebase", [], None, "{tracks?, ticks: bool}", has_selection, |e, p| flag(
             e,
             p,
@@ -959,11 +968,38 @@ fn select_playlist(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 pub(crate) fn parse_route(s: &soundcraft_model::Session, v: &str) -> Route {
+    // A MIDI port keeps its name, including case and colons. `MIDI:*:Keys` is every channel of Keys.
+    if let Some(rest) = v.strip_prefix("MIDI:") {
+        return if rest.is_empty() { Route::None } else { Route::Hardware(format!("MIDI:{rest}")) };
+    }
     match v.to_ascii_lowercase().as_str() {
-        "" | "none" | "no input" | "no output" => Route::None,
+        "" | "none" | "no input" | "no output" | "all" => Route::None,
         "main" | "out 1-2" | "master" => Route::Main,
         _ => s.bus_by_name(v).map_or_else(|| Route::Hardware(v.to_string()), |b| Route::Bus(b.id)),
     }
+}
+
+fn midi_output(e: &mut Engine, p: &Value) -> Result<Value> {
+    let tracks = tracks_required(e, "track.midi_output", p)?;
+    let v = str_param(p, "output").ok_or_else(|| bad("track.midi_output", "`output` required"))?.to_string();
+    let s = e.session_mut();
+    let r = parse_route(s, &v);
+    let r = match r {
+        Route::Hardware(ref name) if name.starts_with("MIDI:") => r,
+        Route::None => Route::None,
+        _ => return Err(bad("track.midi_output", "`output` must be none or MIDI:<channel>:<device>")),
+    };
+    let mut set = 0;
+    for t in &tracks {
+        if let Some(tr) = s.track_mut(*t).filter(|tr| tr.kind.is_midi()) {
+            tr.mixer.midi_output = r.clone();
+            set += 1;
+        }
+    }
+    if set == 0 {
+        return Err(bad("track.midi_output", "select a MIDI or instrument track"));
+    }
+    Ok(json!({"output": r, "tracks": set}))
 }
 
 fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
@@ -976,6 +1012,7 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     if let Route::Hardware(name) = &r
         && create_bus
         && !name.to_ascii_lowercase().starts_with("in ")
+        && !name.starts_with("MIDI:")
     {
         let fmt = tracks
             .first()

@@ -23,6 +23,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     workspace(app, ctx);
     configurations(app, ctx);
     playback_engine(app, ctx);
+    midi_devices(app, ctx);
     crate::plugin_folders::window(app, ctx);
     io_setup(app, ctx);
     shortcuts_window(app, ctx);
@@ -478,6 +479,108 @@ fn number_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<u32>
     combo.response.accessible_name(name);
 }
 
+/// Setup › MIDI: which input and output ports are open, what just arrived, and clock / MTC out.
+fn midi_devices(app: &mut SoundApp, ctx: &egui::Context) {
+    let mut open = app.ui.show_midi_devices;
+    if !open {
+        return;
+    }
+    let inputs: Vec<soundcraft_playback::PortInfo> = app.midi_hw.inputs().to_vec();
+    let outputs: Vec<soundcraft_playback::PortInfo> = app.midi_hw.outputs().to_vec();
+    let clock = app.engine.session().edit.flag("midi.beat_clock");
+    let mtc = app.engine.session().edit.flag("midi.mtc");
+    let mut refresh = false;
+    let mut clock_set = None;
+    let mut mtc_set = None;
+    let mut input_toggle: Option<(String, bool)> = None;
+    let mut output_toggle: Option<(String, bool)> = None;
+    win(ctx, &mut open, "MIDI Devices", vec2(460.0, 420.0), |ui| {
+        ui.label(
+            "Inputs play record-enabled and input-monitored MIDI and instrument tracks. With MIDI Thru, a keyboard also plays the selected one.",
+        );
+        if ui.button("Refresh").clicked() {
+            refresh = true;
+        }
+        ui.separator();
+        ui.strong("Inputs");
+        if inputs.is_empty() {
+            ui.label("No MIDI inputs. Plug in a keyboard, then Refresh.");
+        }
+        for port in &inputs {
+            ui.horizontal(|ui| {
+                let mut on = port.enabled;
+                if ui.checkbox(&mut on, &port.name).changed() {
+                    input_toggle = Some((port.name.clone(), on));
+                }
+                if port.activity > 0 {
+                    ui.label("●");
+                }
+                if let Some(err) = &port.error {
+                    ui.label(err);
+                } else if port.open {
+                    ui.weak("open");
+                }
+            });
+        }
+        ui.separator();
+        ui.strong("Outputs");
+        if outputs.is_empty() {
+            ui.label("No MIDI outputs.");
+        }
+        for port in &outputs {
+            ui.horizontal(|ui| {
+                let mut on = port.enabled;
+                if ui.checkbox(&mut on, &port.name).changed() {
+                    output_toggle = Some((port.name.clone(), on));
+                }
+                if let Some(err) = &port.error {
+                    ui.label(err);
+                }
+            });
+        }
+        ui.separator();
+        let mut clock_on = clock;
+        if ui.checkbox(&mut clock_on, "MIDI Beat Clock (24 per quarter, while playing)").changed() {
+            clock_set = Some(clock_on);
+        }
+        let mut mtc_on = mtc;
+        if ui.checkbox(&mut mtc_on, "MIDI Time Code (quarter frames, 24/25/29.97/30)").changed() {
+            mtc_set = Some(mtc_on);
+        }
+        ui.weak("A track's MIDI output is chosen on the track. Clock and MTC go to every enabled output.");
+    });
+    app.ui.show_midi_devices = open;
+    if refresh {
+        app.midi_hw.refresh(app.engine.session());
+        // The menu opens this window, so the studio list is the ports just found.
+        let mut names: Vec<&str> = app.midi_hw.inputs().iter().chain(app.midi_hw.outputs().iter()).map(|p| p.name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        let _ = app.engine.execute("setup.midi_studio", &json!({"devices": names}));
+    }
+    if let Some(on) = clock_set {
+        let _ = app.engine.execute("setup.midi_beat_clock", &json!({"enabled": on}));
+    }
+    if let Some(on) = mtc_set {
+        let _ = app.engine.execute("setup.mtc", &json!({"enabled": on}));
+    }
+    if let Some((name, on)) = input_toggle {
+        set_port_list(app, "setup.midi_input_devices", &inputs, &name, on);
+    }
+    if let Some((name, on)) = output_toggle {
+        set_port_list(app, "setup.midi_output_devices", &outputs, &name, on);
+    }
+}
+
+/// The allow-list is empty until the first toggle, and empty means every port. Turning one off
+/// therefore writes every other port in, so the rest stay open.
+fn set_port_list(app: &mut SoundApp, cmd: &str, ports: &[soundcraft_playback::PortInfo], name: &str, on: bool) {
+    let enable: Vec<&str> = ports.iter().filter(|p| (p.name == name && on) || (p.name != name && p.enabled)).map(|p| p.name.as_str()).collect();
+    let disable: Vec<&str> = if on { Vec::new() } else { vec![name] };
+    let _ = app.engine.execute(cmd, &json!({"enable": enable, "disable": disable}));
+    app.midi_hw.refresh(app.engine.session());
+}
+
 /// Setup › Playback Engine / Hardware: choose the audio system, devices, rate and buffer size.
 pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_playback_engine;
@@ -627,10 +730,36 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     Ok(out)
 }
 
-/// Setup › I/O: busses and output paths.
+fn channel_list(channels: &[u16]) -> String {
+    if channels.is_empty() {
+        return "—".into();
+    }
+    channels.iter().map(|c| c.saturating_add(1).to_string()).collect::<Vec<_>>().join(", ")
+}
+
+/// Setup › I/O: named inputs, outputs and busses, and the record-offset compensation.
 pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_io_setup;
-    win(ctx, &mut open, "I/O Setup", vec2(420.0, 300.0), |ui| {
+    win(ctx, &mut open, "I/O Setup", vec2(460.0, 420.0), |ui| {
+        ui.label(egui::RichText::new("Inputs").strong());
+        let inputs: Vec<(String, String, String, bool)> = app
+            .engine
+            .session()
+            .inputs
+            .iter()
+            .map(|p| (p.name.clone(), p.format.label().to_string(), channel_list(&p.resolved_channels()), p.active))
+            .collect();
+        if inputs.is_empty() {
+            ui.label("No input paths yet. New sessions start with In 1-2.");
+        }
+        for (name, fmt, channels, active) in inputs {
+            ui.label(format!("{name} — {fmt} — ch {channels}{}", if active { "" } else { " (inactive)" }));
+        }
+        if ui.button("New Input").clicked() {
+            let n = app.engine.session().inputs.len() + 1;
+            let _ = app.run("setup.io", json!({"action": "create_input", "name": format!("In {n}"), "format": "mono"}));
+        }
+        ui.separator();
         ui.label(egui::RichText::new("Busses").strong());
         let busses: Vec<(String, String)> = app.engine.session().busses.iter().map(|b| (b.name.clone(), b.format.label().to_string())).collect();
         egui::Grid::new("busses").num_columns(3).striped(true).show(ui, |ui| {
@@ -670,7 +799,18 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(egui::RichText::new(format!("{} ch", main.channels())).small());
         });
         for o in app.engine.session().outputs.clone() {
-            ui.label(format!("{} — {} from channel {}", o.name, o.format.label(), o.first_channel + 1));
+            let channels = channel_list(&o.resolved_channels());
+            ui.label(format!("{} — {} — ch {channels}{}", o.name, o.format.label(), if o.active { "" } else { " (inactive)" }));
+        }
+        ui.separator();
+        ui.label(egui::RichText::new("Record offset").strong());
+        ui.label("Shifts a take earlier by the input and output latency, plus this user offset.");
+        let mut samples = app.engine.session().edit.value("engine.record_offset", 0.0).round().clamp(-2_000_000.0, 2_000_000.0) as i32;
+        let mut compensate = app.engine.session().edit.value("engine.record_compensate", 1.0) >= 0.5;
+        let drag = ui.add(egui::DragValue::new(&mut samples).range(-2_000_000..=2_000_000).suffix(" samples")).changed();
+        let check = ui.checkbox(&mut compensate, "Compensate input and output latency").changed();
+        if drag || check {
+            let _ = app.run("setup.record_offset", json!({"samples": samples, "compensate": compensate}));
         }
     });
     app.ui.show_io_setup = open;

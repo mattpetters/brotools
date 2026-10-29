@@ -89,8 +89,11 @@ impl SoundApp {
     }
 
     fn start_recording(&mut self) {
-        let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
-        if !armed {
+        let armed =
+            |kind: fn(&soundcraft_model::Track) -> bool| self.engine.session().tracks.iter().any(|t| t.mixer.record_arm && !t.inactive && kind(t));
+        let audio_armed = armed(|t| t.kind == soundcraft_model::TrackKind::Audio);
+        let midi_armed = armed(|t| t.kind.is_midi());
+        if !audio_armed && !midi_armed {
             let why = if self.engine.session().tracks.is_empty() {
                 "Nothing to record on yet: add a track with Track › New…, then click its R button."
             } else {
@@ -100,16 +103,25 @@ impl SoundApp {
             self.record_hint = Some((self.last_frame.unwrap_or_default(), why));
             return;
         }
-        self.ensure_input();
-        let takes = match self.arm_recorder() {
-            Ok(takes) => takes,
-            Err(err) => {
-                self.ui.status = format!("Cannot record: {err}");
-                return;
+        let takes = if audio_armed {
+            self.ensure_input();
+            match self.arm_recorder() {
+                Ok(takes) => takes,
+                Err(err) => {
+                    if !midi_armed {
+                        self.ui.status = format!("Cannot record: {err}");
+                        return;
+                    }
+                    Vec::new()
+                }
             }
+        } else {
+            Vec::new()
         };
         self.lost_shown = 0;
         if let Some(p) = &self.player {
+            // Drop messages left from the previous take (a stop can land one buffer late).
+            let _ = p.take_midi_record();
             p.set_recording(true);
         }
         let already_playing = self.is_playing();
@@ -145,10 +157,25 @@ impl SoundApp {
     /// autosave that plan with the session.
     fn plan_recording(&mut self, takes: Vec<soundcraft_engine::io::Take>, pass: Option<Samples>) {
         let rate = self.recorder.as_ref().map_or(0, |r| r.sample_rate);
-        self.take_plan = Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, rate, takes });
+        let offset = self.record_compensation();
+        self.take_plan = Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, rate, offset, takes });
         if let Some(root) = self.autosave_dir.clone() {
             self.queue_autosave(root);
         }
+    }
+
+    /// Samples to shift a take earlier: the driver's input and output latency, or two buffers when
+    /// the driver has not reported any, plus the user offset from `setup.record_offset`.
+    fn record_compensation(&self) -> i64 {
+        let user_v = self.engine.session().edit.value("engine.record_offset", 0.0);
+        let user = if user_v.is_finite() { user_v.round().clamp(-2_000_000.0, 2_000_000.0) as i64 } else { 0 };
+        let compensate = self.engine.session().edit.value("engine.record_compensate", 1.0) >= 0.5;
+        let (input_latency, output_latency, buffer) = match (&self.recorder, &self.player) {
+            (Some(rec), Some(play)) => (rec.input_latency_frames(), play.output_latency_frames(), play.device_buffer.unwrap_or(0)),
+            (None, Some(play)) => (0, play.output_latency_frames(), play.device_buffer.unwrap_or(0)),
+            _ => (0, 0, self.ui.audio.buffer_size.unwrap_or(0)),
+        };
+        soundcraft_playback::record_offset_samples(input_latency, output_latency, buffer, user, compensate)
     }
 
     /// Arm the input for the record-enabled tracks; a session never saved records into its
@@ -182,24 +209,74 @@ impl SoundApp {
             p.set_recording(false);
         }
         let plan = self.take_plan.take();
-        let Some(r) = &mut self.recorder else { return };
+        let punch = self.punch.take();
+        let midi_status = self.place_midi_take(plan.as_ref(), punch);
+        let Some(r) = &mut self.recorder else {
+            if let Some(status) = midi_status {
+                self.ui.status = status;
+            }
+            return;
+        };
         let (takes, problem) = r.finish();
         let tracks = takes.len().max(1);
-        let plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
+        let mut plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
             start: self.record_start,
             pass: None,
-            punch: self.punch,
+            punch,
             rate: 0,
+            offset: 0,
             takes: Vec::new(),
         });
-        self.punch = None;
+        plan.offset = self.record_compensation();
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
-        self.ui.status =
-            if plan.pass.is_some() { format!("Loop-recorded {} take(s)", ids.len() / tracks) } else { format!("Recorded {} clip(s)", ids.len()) };
+        let shift = if plan.offset == 0 { String::new() } else { format!(", shifted {} samples for delay compensation", plan.offset) };
+        self.ui.status = if plan.pass.is_some() {
+            format!("Loop-recorded {} take(s){shift}", ids.len() / tracks)
+        } else {
+            format!("Recorded {} clip(s){shift}", ids.len())
+        };
+        if let Some(status) = midi_status {
+            self.ui.status = format!("{}; {status}", self.ui.status);
+        }
         if let Some(p) = problem {
             log::warn!("recording: {p}");
             self.ui.status = format!("{} ({p})", self.ui.status);
+        }
+    }
+
+    /// Turn the MIDI messages captured during the take into clips. `None` when nothing arrived.
+    fn place_midi_take(&mut self, plan: Option<&soundcraft_engine::io::Recording>, punch: Option<Range>) -> Option<String> {
+        let (end, events) = self.player.as_ref()?.take_midi_record();
+        if events.is_empty() {
+            return None;
+        }
+        let ports = self.midi_hw.link().ports;
+        let mut payload = Vec::with_capacity(events.len().min(500_000));
+        for ev in events.iter().take(500_000) {
+            let mut row = vec![json!(ev.at), json!(ev.status), json!(ev.data1), json!(ev.data2)];
+            if let Some(name) = ports.name(ev.port) {
+                row.push(json!(name));
+            }
+            payload.push(serde_json::Value::Array(row));
+        }
+        let start = plan.map(|p| p.start).unwrap_or(self.record_start).max(0);
+        let end = end.max(start.saturating_add(1));
+        let mut params = json!({"start": start, "end": end, "events": payload});
+        if let Some(pass) = plan.and_then(|p| p.pass) {
+            params["pass"] = json!(pass);
+        }
+        if let Some(punch) = punch.or(plan.and_then(|p| p.punch)) {
+            params["punch_start"] = json!(punch.start);
+            params["punch_end"] = json!(punch.end);
+        }
+        match self.engine.execute("midi.record_take", &params) {
+            Ok(v) => {
+                let notes = v["notes"].as_u64().unwrap_or(0);
+                let clips = v["clips"].as_array().map(|a| a.len()).unwrap_or(0);
+                (notes > 0 || clips > 0).then(|| format!("MIDI: {notes} note(s), {clips} clip(s)"))
+            }
+            Err(err) => Some(format!("MIDI recording: {err}")),
         }
     }
 

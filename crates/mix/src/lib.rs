@@ -63,6 +63,7 @@ use std::ops::Bound;
 mod automation;
 mod clips;
 mod instances;
+mod live_midi;
 mod meter;
 mod midi;
 mod offline;
@@ -73,6 +74,7 @@ mod threads;
 
 use automation::{GainRamp, pan_at, pan_segment, send_level, transport_at, volume_db_at};
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
+pub use live_midi::{ALL_PORTS, LiveMidi, MidiOut, MidiPorts, hears_live_midi};
 pub use meter::StripMeter;
 use midi::sync_sample;
 pub use offline::{
@@ -82,7 +84,8 @@ pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
 use routing::{processing_order, structure_fingerprint};
 use strip::{
-    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
+    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, hears_live_input, note_insert_latency, process_strip, strip_channels,
+    strip_format,
 };
 #[cfg(test)]
 use strip::{DelayLine, MAX_LATENCY};
@@ -100,6 +103,12 @@ pub fn main_channels(s: &Session) -> usize {
     s.main_format().channels().clamp(MAIN_CHANNELS, MAX_CHANNELS)
 }
 
+/// Channels the device mix needs: the main mix, plus every hardware output path that lands past it.
+pub fn playback_channels(s: &Session) -> usize {
+    let hw = s.outputs.iter().filter(|o| o.active).flat_map(|o| o.resolved_channels()).map(|c| usize::from(c).saturating_add(1)).max().unwrap_or(0);
+    main_channels(s).max(hw).min(MAX_CHANNELS)
+}
+
 /// Renders sessions. Keep one per playback stream; plugin state persists across blocks.
 pub struct MixEngine {
     sample_rate: f32,
@@ -107,6 +116,9 @@ pub struct MixEngine {
     strips: HashMap<TrackId, Strip>,
     busses: HashMap<BusId, BusBuf>,
     main: Vec<Vec<f32>>,
+    /// Direct hardware outputs, indexed by device channel. Tracks routed to a named output path
+    /// sum here; [`MixEngine::render`] adds them onto `out` after the main mix.
+    hardware: Vec<Vec<f32>>,
     main_fmt: ChannelFormat,
     pub meters: HashMap<TrackId, StripMeter>,
     pub main_meter: StripMeter,
@@ -134,6 +146,12 @@ pub struct MixEngine {
     pub monitor_only: bool,
     /// Recording: record-armed tracks hear their input (auto input).
     pub recording: bool,
+    /// Live MIDI for the next block, filled by the audio host. Cleared by the host each block.
+    pub midi_in: Vec<LiveMidi>,
+    /// Hardware MIDI produced by the last [`MixEngine::render`] (clip playback, thru, all-notes-off).
+    pub midi_out: Vec<MidiOut>,
+    /// Names of the input and output ports `midi_in` / `midi_out` index.
+    pub midi_ports: std::sync::Arc<MidiPorts>,
     /// Mix the metronome (Options > Click) into the output. Playback turns this on; offline renders
     /// (bounces, stems, exports) leave it off so the click is never printed into a file.
     pub metronome: bool,
@@ -156,6 +174,7 @@ impl MixEngine {
             strips: HashMap::new(),
             busses: HashMap::new(),
             main: vec![vec![0.0; max_block]; MAIN_CHANNELS],
+            hardware: Vec::new(),
             main_fmt: ChannelFormat::Stereo,
             meters: HashMap::new(),
             main_meter: StripMeter::default(),
@@ -170,6 +189,9 @@ impl MixEngine {
             input: Vec::new(),
             monitor_only: false,
             recording: false,
+            midi_in: Vec::new(),
+            midi_out: Vec::new(),
+            midi_ports: std::sync::Arc::new(MidiPorts::default()),
             metronome: false,
             external: false,
             adopt: HashMap::new(),
@@ -335,6 +357,26 @@ impl MixEngine {
         self.busses.retain(|id, _| s.bus(*id).is_some());
     }
 
+    /// Drop sounding notes after the playhead jumps, including on hardware outputs.
+    fn release_on_seek(&mut self, s: &Session) {
+        let ports = std::sync::Arc::clone(&self.midi_ports);
+        for t in &s.tracks {
+            let Some(st) = self.strips.get_mut(&t.id) else { continue };
+            if let Some(i) = &mut st.instrument {
+                st.live.release(&mut *i.plugin);
+                i.plugin.all_notes_off();
+            } else {
+                st.live.clear();
+            }
+            st.held.clear();
+            st.chase = true;
+            st.midi_out.clear();
+            if let Some((port, _)) = live_midi::output_port(t, &ports) {
+                live_midi::panic(port, &mut st.midi_out);
+            }
+        }
+    }
+
     /// Re-syncs plugin instances and the routing order when the session's structure changed
     /// since the last sync (or instances were adopted). `render` calls it; a realtime host may
     /// also call it right after swapping sessions so slots are filled before playback starts.
@@ -368,7 +410,7 @@ impl MixEngine {
             }
         }
         let busses = std::mem::take(&mut self.busses);
-        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+        let live_in = self.live_input(s);
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
                 process_strip(s, t, st, &busses, &live_in, blk);
@@ -384,19 +426,22 @@ impl MixEngine {
         self.order = order;
         self.render_masters(s, blk);
         self.write_output(s, blk, out);
+        self.collect_midi_out();
+    }
+
+    /// Gather hardware MIDI each strip produced this block.
+    fn collect_midi_out(&mut self) {
+        self.midi_out.clear();
+        for st in self.strips.values_mut() {
+            self.midi_out.append(&mut st.midi_out);
+        }
     }
 
     /// Silence what a seek leaves ringing, sync to the session and clear the block's accumulators.
     fn begin_block(&mut self, s: &Session, pos: Samples, frames: usize) {
         if pos != self.last_end {
-            // Seek: silence held notes and ringing plugins.
-            for st in self.strips.values_mut() {
-                if let Some(i) = &mut st.instrument {
-                    i.plugin.all_notes_off();
-                }
-                st.held.clear();
-                st.chase = true;
-            }
+            // Seek: silence held notes and ringing plugins, and tell external synths to let go.
+            self.release_on_seek(s);
         }
         self.last_end = pos.saturating_add(frames as i64);
         self.ensure_synced(s);
@@ -406,6 +451,36 @@ impl MixEngine {
             }
         }
         for c in &mut self.main {
+            c.iter_mut().take(frames).for_each(|x| *x = 0.0);
+        }
+        self.ensure_hardware(s, frames);
+    }
+
+    fn live_input<'a>(&'a self, s: &Session) -> LiveInput<'a> {
+        LiveInput {
+            input: &self.input,
+            monitor_only: self.monitor_only,
+            recording: self.recording,
+            low_latency: s.edit.flag("options.low_latency_monitoring"),
+            midi: &self.midi_in,
+            ports: &self.midi_ports,
+        }
+    }
+
+    /// Size the hardware-output buffers to the widest active path and silence this block.
+    fn ensure_hardware(&mut self, s: &Session, frames: usize) {
+        let n = s
+            .outputs
+            .iter()
+            .filter(|o| o.active)
+            .flat_map(|o| o.resolved_channels())
+            .map(|c| usize::from(c).saturating_add(1).min(MAX_CHANNELS))
+            .max()
+            .unwrap_or(0);
+        if self.hardware.len() != n {
+            self.hardware = vec![vec![0.0; self.max_block]; n];
+        }
+        for c in &mut self.hardware {
             c.iter_mut().take(frames).for_each(|x| *x = 0.0);
         }
     }
@@ -453,22 +528,29 @@ impl MixEngine {
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
             let ch = st.buf.len();
-            st.align.set(lmax_t.saturating_sub(st.latency), ch);
+            // Low Latency Monitoring skips alignment for a track hearing its audio input. An armed
+            // or monitored MIDI/instrument track does the same while recording or stopped, so a
+            // performer is not waiting on the slowest plugin. Bounces leave both off.
+            let live = self.live_input(s);
+            let direct = (live.low_latency && hears_live_input(t, &live)) || ((self.monitor_only || self.recording) && hears_live_midi(s, t));
+            let delay = if direct { 0 } else { lmax_t.saturating_sub(st.latency) };
+            st.align.set(delay, ch);
             st.align.process(&mut st.buf, frames);
             if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
-                st.align_pre.set(lmax_t.saturating_sub(st.latency), ch);
+                st.align_pre.set(delay, ch);
                 st.align_pre.process(&mut st.pre, frames);
             }
-            let waits = match &t.mixer.output {
-                Route::Main => true,
-                Route::Bus(b) => self.aux_fed.contains(b),
-                _ => false,
-            };
+            let waits = !direct
+                && match &t.mixer.output {
+                    Route::Main => true,
+                    Route::Bus(b) => self.aux_fed.contains(b),
+                    _ => false,
+                };
             st.out_extra.set(if waits { lmax_a } else { 0 }, ch);
         }
         for (i, st) in work.iter_mut() {
             if let Some(t) = s.tracks.get(*i) {
-                self.route_strip(t, st, pos, frames);
+                self.route_strip(s, t, st, pos, frames);
             }
         }
         for (i, st) in work.drain(..) {
@@ -488,13 +570,13 @@ impl MixEngine {
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
-            let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+            let live_in = self.live_input(s);
             process_strip(s, t, &mut st, &self.busses, &live_in, blk);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
             st.align.process(&mut st.buf, frames);
             st.out_extra.set(0, ch);
-            self.route_strip(t, &mut st, pos, frames);
+            self.route_strip(s, t, &mut st, pos, frames);
             self.strips.insert(t.id, st);
         }
     }
@@ -557,7 +639,7 @@ impl MixEngine {
         if self.metronome && !self.monitor_only && s.edit.click && (!s.edit.flag("click.only_during_record") || self.recording) {
             click::render(s, pos, frames, &mut self.main);
         }
-        // Output: min(out.len(), main channels) channels; any further output channels are silent.
+        // Output: the main mix, then direct hardware paths summed onto their device channels.
         for (c, o) in out.iter_mut().enumerate() {
             let src = self.main.get(c);
             for i in 0..frames {
@@ -566,8 +648,35 @@ impl MixEngine {
                     *d = if v.is_finite() { v } else { 0.0 };
                 }
             }
+            if let Some(hw) = self.hardware.get(c) {
+                for i in 0..frames {
+                    let v = hw.get(i).copied().unwrap_or(0.0);
+                    if let Some(d) = o.get_mut(i) {
+                        let s = *d + if v.is_finite() { v } else { 0.0 };
+                        *d = if s.is_finite() { s } else { 0.0 };
+                    }
+                }
+            }
         }
         self.main_meter.measure(&self.main, frames, 0.0);
+    }
+
+    /// Sum `src` onto the hardware channels of output path `name` (one strip channel per path channel).
+    fn mix_hardware(&mut self, s: &Session, name: &str, src: &[Vec<f32>], frames: usize) {
+        let Some(path) = s.output_by_name(name).filter(|p| p.active) else { return };
+        let chans = path.resolved_channels();
+        for (k, ch) in chans.iter().enumerate().take(src.len()) {
+            let idx = usize::from(*ch);
+            let Some(dst) = self.hardware.get_mut(idx) else { continue };
+            let Some(from) = src.get(k) else { continue };
+            for i in 0..frames {
+                let v = from.get(i).copied().unwrap_or(0.0);
+                if let Some(d) = dst.get_mut(i) {
+                    let summed = *d + if v.is_finite() { v } else { 0.0 };
+                    *d = if summed.is_finite() { summed } else { 0.0 };
+                }
+            }
+        }
     }
 
     /// The delay-compensation latency written onto `bus`: the slowest track insert, plus the
@@ -595,7 +704,7 @@ impl MixEngine {
     }
 
     /// Send, meter and pan a processed strip into the busses / main mix.
-    fn route_strip(&mut self, t: &Track, strip: &mut Strip, pos: Samples, frames: usize) {
+    fn route_strip(&mut self, s: &Session, t: &Track, strip: &mut Strip, pos: Samples, frames: usize) {
         let m = self.meters.entry(t.id).or_default();
         m.measure(&strip.buf, frames, strip.gr);
         m.plugin_failures = strip.failures;
@@ -634,13 +743,17 @@ impl MixEngine {
             }
             _ => &strip.buf,
         };
+        if let Route::Hardware(name) = &t.mixer.output {
+            self.mix_hardware(s, name, src, frames);
+            return;
+        }
         let (dst, dst_fmt) = match &t.mixer.output {
             Route::Main => (&mut self.main, self.main_fmt),
             Route::Bus(b) => match self.busses.get_mut(b) {
                 Some(d) => (&mut d.buf, d.fmt),
                 None => return,
             },
-            _ => return,
+            Route::None | Route::Hardware(_) => return,
         };
         let mut start = 0;
         while start < frames {

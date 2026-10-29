@@ -4,7 +4,7 @@
 
 use super::*;
 use soundcraft_audio_io::AudioBuffer;
-use soundcraft_model::{Insert, SourceAudio, SourceId};
+use soundcraft_model::{InputPath, Insert, OutputPath, SourceAudio, SourceId};
 use std::sync::Arc;
 
 fn synth_session(level_db: f32) -> Session {
@@ -933,6 +933,60 @@ fn a_plugins_bogus_latency_is_capped() {
 }
 
 #[test]
+fn hardware_output_path_lands_on_its_channels() {
+    let mut s = Session::default();
+    s.outputs.push(OutputPath::new("Out 3-4", 2, ChannelFormat::Stereo));
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let buf = AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.2; 512], vec![0.4; 512]] };
+    s.pool.insert(SourceId(901), Arc::new(SourceAudio::new(buf)));
+    let id = s.new_clip_id();
+    let tr = s.track_mut(t).unwrap();
+    tr.playlist_mut().unwrap().clips.push(Clip::audio(id, "hw", SourceId(901), 0, 0, 512));
+    tr.mixer.output = Route::Hardware("Out 3-4".into());
+    let mut eng = MixEngine::new(48_000.0, 512);
+    let mut out = vec![vec![0.0; 512]; 4];
+    eng.render(&s, 0, 512, &mut out);
+    assert!(out[0].iter().all(|x| x.abs() < 1e-6), "main left stays empty");
+    assert!(out[1].iter().all(|x| x.abs() < 1e-6), "main right stays empty");
+    assert!((out[2][100] - 0.2).abs() < 1e-5, "{}", out[2][100]);
+    assert!((out[3][100] - 0.4).abs() < 1e-5, "{}", out[3][100]);
+}
+
+#[test]
+fn named_input_path_monitors_that_channel() {
+    let (mut s, t) = session_with_dc(0.5, 512);
+    s.inputs.push(InputPath { name: "Guitar".into(), first_channel: 2, format: ChannelFormat::Mono, channels: vec![2], active: true });
+    s.track_mut(t).unwrap().mixer.input = Route::Hardware("Guitar".into());
+    s.track_mut(t).unwrap().mixer.input_monitor = true;
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.0; 512], vec![0.0; 512], vec![0.25; 512]];
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    let expect = 0.25 * std::f32::consts::FRAC_1_SQRT_2;
+    assert!((out[0][100] - expect).abs() < 1e-3, "{}", out[0][100]);
+}
+
+#[test]
+fn low_latency_monitoring_does_not_wait_for_other_plugins() {
+    let (mut s, t) = session_with_dc(0.0, 512);
+    s.track_mut(t).unwrap().mixer.input_monitor = true;
+    let other = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    s.track_mut(other).unwrap().mixer.inserts[0] = Some(Insert::new("maximizer"));
+    s.track_mut(other).unwrap().mixer.mute = true;
+    let latency = soundcraft_dsp::create("maximizer").unwrap().latency();
+    assert!(latency > 16 && latency < 400, "{latency}");
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.25; 512]];
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    assert!(out[0][0].abs() < 1e-4, "delay compensation holds the monitor, got {}", out[0][0]);
+    assert!(out[0][latency] > 0.05, "the input emerges after the plugin delay");
+    s.edit.set_flag("options.low_latency_monitoring", true);
+    eng.render(&s, 512, 512, &mut out);
+    assert!(out[0][0] > 0.05, "low latency monitoring plays the input in this block, got {}", out[0][0]);
+}
+
+#[test]
 fn input_monitoring_replaces_clips() {
     let (mut s, t) = session_with_dc(0.5, 4800);
     let mut eng = MixEngine::new(48_000.0, 512);
@@ -1186,4 +1240,47 @@ fn apply_matrix_span_matches_the_plain_per_sample_sum() {
             }
         }
     }
+}
+
+#[test]
+fn a_live_note_sounds_on_an_armed_instrument_while_stopped() {
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Keys"));
+    let tr = s.track_mut(t).unwrap();
+    tr.mixer.record_arm = true;
+    tr.instrument = Some(Insert::new("subtractive_synth"));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.monitor_only = true;
+    eng.midi_in.push(LiveMidi { offset: 0, port: ALL_PORTS, status: 0x90, data1: 60, data2: 110 });
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    let energy: f32 = out[0].iter().map(|x| x.abs()).sum();
+    assert!(energy > 0.01, "armed instrument stayed silent ({energy})");
+    // A different channel is ignored when the track listens to channel 1 only.
+    s.track_mut(t).unwrap().mixer.input = soundcraft_model::MidiEndpoint { device: None, channel: Some(0) }.route();
+    eng.midi_in.clear();
+    eng.midi_in.push(LiveMidi { offset: 0, port: ALL_PORTS, status: 0x91, data1: 72, data2: 110 });
+    let mut quiet = vec![vec![0.0; 512]; 2];
+    eng.monitor_only = true;
+    // The previous note is still held, so compare a fresh engine.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.monitor_only = true;
+    eng.midi_in.push(LiveMidi { offset: 0, port: ALL_PORTS, status: 0x91, data1: 72, data2: 110 });
+    eng.render(&s, 0, 512, &mut quiet);
+    let other: f32 = quiet[0].iter().map(|x| x.abs()).sum();
+    assert!(other < 0.01, "channel 2 reached a channel-1 track ({other})");
+}
+
+#[test]
+fn clip_notes_are_copied_to_the_tracks_midi_output() {
+    let mut s = synth_session(0.0);
+    let t = s.tracks[0].id;
+    s.track_mut(t).unwrap().mixer.midi_output = soundcraft_model::MidiEndpoint { device: Some("Out"), channel: None }.route();
+    let ports = std::sync::Arc::new(MidiPorts::default());
+    assert_eq!(ports.assign("Out"), 0);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.midi_ports = ports;
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    assert!(eng.midi_out.iter().any(|e| e.status & 0xF0 == 0x90 && e.data1 == 60), "no note-on on the MIDI output: {:?}", eng.midi_out);
 }

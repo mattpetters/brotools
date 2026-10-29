@@ -52,11 +52,12 @@ bounces offline (`RangeRender`, streamed to the file block by block) and realtim
 (`soundcraft_playback::Player`, which owns it on the audio thread and receives new session
 snapshots through a channel).
 
-Device I/O today is the system's *default* output and *default* input device, opened as two
-separate cpal streams; the mix renders 512-sample blocks and resamples to the device rate when
-they differ. There is no device or buffer-size selection, no ASIO, and no MIDI device layer yet
-(see [`hardware-parity.md`](hardware-parity.md)). Sources are decoded whole into the `SourcePool`
-and recordings are captured in memory until stop.
+Device I/O chooses an output and input device, sample rate and buffer size (Setup › Playback
+Engine). When the input is left unset, record and playback share that device, rate and buffer as
+two cpal callbacks; the mix still renders 512-sample blocks and resamples to the device rate when
+they differ. ASIO is an opt-in build feature. MIDI input and output use midir (CoreMIDI, WinMM,
+ALSA). Recordings stream to disk; playback still decodes sources whole into the `SourcePool`
+(see [`hardware-parity.md`](hardware-parity.md)).
 
 `soundcraft-video` holds our own H.264, ProRes and Motion JPEG decoders and the ISO-BMFF demuxer
 for the video track. Hosted plugins (`clap-host`, `vst3-host`, `au-host`) are scanned, created and
