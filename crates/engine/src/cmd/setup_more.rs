@@ -113,7 +113,18 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"enabled": s.edit.flag("midi.beat_clock"), "offset": s.edit.value("midi.beat_clock.offset", 0.0), "destination": text(&s.edit, "midi.beat_clock.destination")}))
         }),
         cmd!(noundo "setup.midi_input_filter", "MIDI Input Filter...", ["Setup", "MIDI"], None, "{filter?: [notes|pitch_bend|mono_aftertouch|poly_aftertouch|program|cc|sysex|realtime], allow?: [...]} — filtered kinds are not recorded", always, midi_filter),
-        cmd!(noundo "setup.midi_input_devices", "MIDI Input Devices...", ["Setup", "MIDI"], None, "{enable?: [names], disable?: [names]}", always, midi_inputs),
+        cmd!(noundo "setup.midi_input_devices", "MIDI Input Devices...", ["Setup", "MIDI"], None, "{enable?: [names], disable?: [names], clear?: bool} — with no names stored, every input is enabled", always, |e, p| midi_ports(e, p, "midi.input.")),
+        cmd!(noundo "setup.midi_output_devices", "MIDI Output Devices", [], None, "{enable?: [names], disable?: [names], clear?: bool} — with no names stored, every output is enabled", always, |e, p| midi_ports(e, p, "midi.output.")),
+        cmd!(noundo "setup.mtc", "MIDI Time Code...", ["Setup", "MIDI"], None, "{enabled?: bool, destination?: name} — quarter-frame MTC while playing", always, |e, p| {
+            let s = e.session_mut();
+            if let Some(v) = p.get("enabled").and_then(Value::as_bool) {
+                s.edit.set_flag("midi.mtc", v);
+            }
+            if let Some(d) = str_param(p, "destination") {
+                set_text(&mut s.edit, "midi.mtc.destination", Some(d));
+            }
+            Ok(json!({"enabled": s.edit.flag("midi.mtc"), "destination": text(&s.edit, "midi.mtc.destination")}))
+        }),
         cmd!(noundo "setup.transcription_settings", "Transcription Settings...", ["Setup"], None, "{enabled?: bool, language?: 'en'}", always, |e, p| {
             let s = e.session_mut();
             if let Some(v) = p.get("enabled").and_then(Value::as_bool) {
@@ -507,22 +518,32 @@ fn midi_filter(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"filtered": filtered}))
 }
 
-fn device_key(name: &str) -> String {
+fn port_key(prefix: &str, name: &str) -> String {
     let n: String = name.chars().filter(|c| !c.is_control() && *c != '=').take(64).collect();
-    format!("midi.input.{}", n.trim())
+    format!("{prefix}{}", n.trim())
 }
 
-fn midi_inputs(e: &mut Engine, p: &Value) -> Result<Value> {
+/// Allow-list of MIDI port names under `prefix` (`midi.input.` or `midi.output.`).
+/// An empty list means every port is enabled. `clear` returns to that.
+fn midi_ports(e: &mut Engine, p: &Value, prefix: &str) -> Result<Value> {
     let s = e.session_mut();
-    for (key, on) in [("enable", true), ("disable", false)] {
-        for n in p.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).take(64).collect::<Vec<_>>()).unwrap_or_default() {
-            if !n.trim().is_empty() {
-                s.edit.set_flag(&device_key(n), on);
-            }
+    if p.get("clear").and_then(Value::as_bool) == Some(true) {
+        s.edit.flags.retain(|f| !f.starts_with(prefix));
+    }
+    for n in names(p, "disable") {
+        s.edit.set_flag(&port_key(prefix, n), false);
+    }
+    for n in names(p, "enable") {
+        if !n.trim().is_empty() {
+            s.edit.set_flag(&port_key(prefix, n), true);
         }
     }
-    let enabled: Vec<&str> = s.edit.flags.iter().filter_map(|f| f.strip_prefix("midi.input.")).collect();
+    let enabled: Vec<&str> = s.edit.flags.iter().filter_map(|f| f.strip_prefix(prefix)).collect();
     Ok(json!({"enabled": enabled}))
+}
+
+fn names<'a>(p: &'a Value, key: &str) -> Vec<&'a str> {
+    p.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).take(64).collect()).unwrap_or_default()
 }
 
 fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {

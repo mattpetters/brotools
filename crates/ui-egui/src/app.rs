@@ -35,6 +35,8 @@ impl SoundApp {
             recent_checked: None,
             engine,
             player,
+            midi_hw: soundcraft_playback::MidiHub::new(),
+            midi_attached: false,
             recorder: None,
             record_start: 0,
             punch: None,
@@ -190,6 +192,13 @@ impl SoundApp {
         }
         self.watch_output();
         self.watch_input();
+        self.midi_hw.poll(self.engine.session());
+        if !self.midi_attached {
+            if let Some(p) = &self.player {
+                p.set_midi(self.midi_hw.link());
+            }
+            self.midi_attached = self.player.is_some();
+        }
         // Stop the old playback before sending a replacement session to the audio thread.
         self.handle_transport(dt);
         if self.engine.revision != self.last_rev {

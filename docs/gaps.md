@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (G-03: partial Pro Tools session read; AAF/OMF and `.ptx` write remain) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (G-03: partial Pro Tools session read, on top of MIDI devices) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -16,7 +16,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** Duplex is two cpal streams on one device (no single callback); mix block stays 512; JACK and on-device verification still open | Hardware | [hardware-parity.md](hardware-parity.md) | 8–15 |
-| G-02 | **Alpha blocker.** No MIDI device input or output | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 20–35 |
+| G-02 | MIDI devices: no hardware verification on macOS/Windows; no MTC chase, MMC or SysEx | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 8–15 |
 | G-03 | **Alpha blocker.** Cannot hand a session back to Pro Tools (no `.ptx` write, no AAF/OMF). `.ptx`/`.ptxt`/`.ptf` read is partial | File formats | [file-format-parity.md](file-format-parity.md) | 40–70 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 15–25 |
@@ -70,13 +70,21 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 ### G-02. MIDI devices
 
-- **Missing:** all MIDI hardware I/O. No `midir`/CoreMIDI/WinMM/ALSA sequencer code exists;
-  `setup.midi_input_devices` and `setup.midi_studio` only store names. You cannot record from a
-  keyboard, play a hosted instrument live, drive external synths, or send MIDI clock/MTC.
-  `midi_editor.rs:288` notes audition "needs a live MIDI input path".
-- **Impact:** MIDI production is limited to drawing notes and importing SMF.
-- **Estimate:** ≈ 20–35 h (device layer, realtime input to armed tracks and instruments with
-  timestamps, MIDI record/merge/loop, thru, output tracks, clock out).
+- **Done (2026-10-29):** MIDI input and output on macOS (CoreMIDI), Windows (WinMM) and Linux
+  (ALSA sequencer), via `midir`. Ports are listed in Setup › MIDI › MIDI Input Devices, enabled
+  per session (an empty allow-list means every port), and hot-plugged about once a second. A
+  record-enabled or input-monitored MIDI/instrument track plays the input on its instrument
+  (sample offset inside the block, sustain pedal, channel and port filter on the track input).
+  Options › MIDI Thru plays the selected track when nothing is armed. Recording (`midi.record_take`)
+  writes notes and controllers, with punch, loop passes, MIDI Merge and input quantize. Each track
+  chooses a hardware MIDI output; clip playback and thru are sent there. MIDI Beat Clock (with
+  Start/Continue/Stop) and quarter-frame MTC go out while playing, at 24/25/29.97/30.
+- **Missing:** a physical keyboard has not been checked on macOS or Windows (Linux ALSA is the
+  backend this was built against). No MTC/LTC *chase*, no MIDI Machine Control, no SysEx record,
+  no FreeBSD or web MIDI. The on-screen MIDI keyboard (upstream #580) still does not record.
+- **Impact:** a controller can be recorded and can play instruments and external synths. Chase,
+  MMC and a verified macOS/Windows pass remain.
+- **Estimate:** ≈ 8–15 h for chase, MMC and a hardware pass on macOS and Windows.
 
 ### G-03. Session interchange with Pro Tools
 
@@ -180,8 +188,8 @@ switch. ≈ 40–70 h for HUI/MCU plus a mapping layer; hardware needed to verif
 
 ### G-11. Sync
 
-No MTC/LTC chase or generation, no MIDI Beat Clock (`setup.midi_beat_clock` stores a flag only),
-no video reference or word clock awareness, no Satellite-style linking. ≈ 15–25 h after G-01/G-02.
+MIDI Beat Clock and quarter-frame MTC are generated while playing (G-02). No MTC/LTC *chase*, no
+video reference or word clock awareness, no Satellite-style linking. ≈ 10–18 h.
 
 ### G-12. Immersive delivery
 
@@ -247,6 +255,7 @@ missing. Out of scope unless the owner decides otherwise.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-29 | minor | G-03: partial `.ptx`/`.ptxt`/`.ptf`/`.pts` read with a fidelity report. Write, AAF, and OMF remain; estimate 50–90 → 40–70 |
+| 2026-10-29 | major | G-02 shrunk: MIDI input and output, live play-through, recording, beat clock and MTC out. Hardware verification on macOS/Windows, chase, MMC and SysEx remain |
 | 2026-10-29 | minor | G-01: same-device duplex clock, named I/O paths, record offset, low-latency monitoring. G-06: record-to-disk was already in tree (#84); playback streaming remains |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |

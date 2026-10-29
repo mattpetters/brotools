@@ -1,6 +1,6 @@
 # Target-app parity: SoundCraft vs Avid Pro Tools
 
-> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (partial `.ptx` read; file-format dimension ~40 % → ~45 %, session area 35 % → 40 %; headline readiness left at ~40 % because write, AAF, and OMF are still absent) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (partial `.ptx` read on top of MIDI devices; file formats ~45 %, headline readiness still ~40 %) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
 
 The authoritative assessment of how close SoundCraft is to Pro Tools. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimension docs go deeper:
@@ -82,7 +82,7 @@ post-production, tracking) can switch. "Ready" is depth, correctness and fidelit
 | Features | 45 % | **~45 %** | estimated | 520–810 | [area table](#feature-areas) | Menu breadth 94 % measured, but depth is thin: see the area table |
 | UI/UX fidelity | 10 % | **~55 %** | estimated | 60–100 | [ui-parity.md](ui-parity.md) | Edit/Mix windows, every menu, floating windows; open UX bugs #3 #5 #6 #7 #140 #144; shortcuts only recently right on Windows/Linux (#15, #41); generic plugin UIs |
 | File formats | 10 % | **~45 %** | estimated | 60–100 | [file-format-parity.md](file-format-parity.md) | WAV/BWF/RF64/AIFF/FLAC read+write, compressed formats read; partial `.ptx`/`.ptxt`/`.ptf` read; no `.ptx` write, AAF, OMF, ADM BWF, MP3/AAC export, video export |
-| Hardware | 10 % | **~12 %** | estimated | 110–180 | [hardware-parity.md](hardware-parity.md) | Default output and default input device only, fixed 512-sample block, no ASIO, no MIDI devices, no control surfaces, no sync |
+| Hardware | 10 % | **~12 %** | estimated | 110–180 | [hardware-parity.md](hardware-parity.md) | Default output and default input device only, fixed 512-sample block, no ASIO, MIDI devices present but unverified on macOS/Windows hardware, no control surfaces, no sync chase |
 | Stability | 10 % | **~45 %** | estimated | 50–80 | [gaps.md](gaps.md) | Never-crash rules and proptests (random edits, mutated sessions, hostile params); but ~25 open correctness bugs, a launch failure (#142), an X11 llvmpipe failure (#107) |
 | Performance | 5 % | **~35 %** | estimated (unmeasured) | 40–70 | [hardware-parity.md](hardware-parity.md) | Parallel strip rendering and PDC exist; playback still decodes whole files into RAM; recording streams to disk; no track-count or latency benchmarks |
 | Ecosystem / plugins | 4 % | **~30 %** | estimated | in Features + Hardware | [plugin-parity.md](plugin-parity.md) | CLAP/VST3/AU hosting; no AAX (Pro Tools' only format), no ARA, no sidechain, no control-surface ecosystem, no content library |
@@ -247,6 +247,7 @@ serializes more, because it needs hands-on testing.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-29 | minor | Partial `.ptx`/`.ptxt`/`.ptf` read. File formats ~40 % → ~45 %, session interchange area 35 % → 40 %. Headline ~40 % and the file-exchange discount stay: there is still no write, AAF, or OMF |
+| 2026-10-29 | trivial | Hardware evidence mentions MIDI devices (input, output, recording, clock, MTC out), still unverified on macOS/Windows hardware. Percentages unchanged |
 | 2026-10-29 | trivial | Recording and routing rows mention same-device duplex, named hardware paths, record offset and record-to-disk. Percentages unchanged |
 | 2026-10-24 | trivial | Built-in plugin counts: 27 processors + 3 instruments on `main`, and 24 + 2 in the 3bc2d92 code snapshot; the sampler (#108) is no longer listed as missing. Percentages unchanged |
 | 2026-10-10 | minor | Readiness-by-audience table: hours to ~95 % for full (950–1,450 h), mainstream (380–600 h) and essentials (110–200 h). The full number is already the additive weighted sum over the written dimension table (40.6 %); method unchanged |
