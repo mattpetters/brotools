@@ -271,6 +271,7 @@ impl Obj {
 }
 
 fn utf16(d: &[u8]) -> String {
+    // `as_chunks` rather than `chunks_exact`: Rust 1.99 clippy denies the latter for a fixed width.
     let (chunks, _) = d.as_chunks::<2>();
     let units: Vec<u16> = chunks.iter().map(|c| u16::from_le_bytes(*c)).take_while(|u| *u != 0).collect();
     String::from_utf16_lossy(&units)
