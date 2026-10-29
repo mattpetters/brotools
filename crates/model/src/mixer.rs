@@ -473,8 +473,77 @@ pub enum Route {
     /// The main output (hardware outputs 1-2, or the bounce source).
     Main,
     Bus(BusId),
-    /// Hardware input/output by path name.
+    /// Hardware input/output by path name. A MIDI port is `MIDI:<channel>:<device>`
+    /// (see [`MidiEndpoint`]).
     Hardware(String),
+}
+
+/// A MIDI input or output port chosen on a track.
+///
+/// It is stored as [`Route::Hardware`]`("MIDI:<channel>:<device>")`. `*` means every channel
+/// (else 1–16) or every device. Any other route means every device and every channel, which is
+/// the right default for an input and "no port" only when the caller treats both `None`s as
+/// disconnected (MIDI outputs do; see [`MidiEndpoint::output_label`]).
+///
+/// Device names may contain colons: only the first colon after the channel separates them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MidiEndpoint<'a> {
+    /// Port name. `None`: every enabled port (input) or no port (output, when both are `None`).
+    pub device: Option<&'a str>,
+    /// MIDI channel 0..=15. `None`: every channel.
+    pub channel: Option<u8>,
+}
+
+impl<'a> MidiEndpoint<'a> {
+    /// Reads a route. Does not allocate (the audio thread calls it).
+    pub fn of(route: &'a Route) -> MidiEndpoint<'a> {
+        let Route::Hardware(h) = route else { return MidiEndpoint::default() };
+        let Some((ch, dev)) = h.strip_prefix("MIDI:").and_then(|r| r.split_once(':')) else { return MidiEndpoint::default() };
+        MidiEndpoint {
+            device: Some(dev).filter(|d| *d != "*" && !d.is_empty()),
+            channel: ch.parse::<u8>().ok().filter(|c| (1..=16).contains(c)).map(|c| c - 1),
+        }
+    }
+
+    /// The route that stores this choice. Both unset becomes [`Route::None`].
+    pub fn route(&self) -> Route {
+        if self.device.is_none() && self.channel.is_none() {
+            return Route::None;
+        }
+        let ch = self.channel.filter(|c| *c < 16).map_or_else(|| "*".to_string(), |c| (c + 1).to_string());
+        Route::Hardware(format!("MIDI:{ch}:{}", self.device.unwrap_or("*")))
+    }
+
+    /// Whether an event on `channel` (0..=15) from `device` matches.
+    ///
+    /// A chosen device does not match an event whose port is unknown (`device` argument `None`).
+    pub fn accepts(&self, device: Option<&str>, channel: u8) -> bool {
+        self.channel.is_none_or(|c| c == channel) && self.device.is_none_or(|d| device == Some(d))
+    }
+
+    /// Rewrites a channel-voice status onto this endpoint's channel, when one is chosen.
+    pub fn status(&self, status: u8) -> u8 {
+        match self.channel {
+            Some(c) if (0x80..0xF0).contains(&status) => (status & 0xF0) | (c & 0x0F),
+            _ => status,
+        }
+    }
+
+    /// Short text for an input selector. Unset is "All".
+    pub fn label(&self) -> String {
+        match (self.device, self.channel) {
+            (None, None) => "All".to_string(),
+            (None, Some(c)) => format!("All ch {}", c + 1),
+            (Some(d), None) => d.to_string(),
+            (Some(d), Some(c)) => format!("{d} ch {}", c + 1),
+        }
+    }
+
+    /// Short text for an output selector. Unset is "none" (a MIDI track does not fan out to
+    /// every port).
+    pub fn output_label(&self) -> String {
+        if self.device.is_none() && self.channel.is_none() { "none".to_string() } else { self.label() }
+    }
 }
 
 /// A plugin instance on an insert slot.
@@ -567,6 +636,11 @@ pub struct Mixer {
     pub phase_invert: bool,
     pub input: Route,
     pub output: Route,
+    /// Hardware MIDI port this track sends to (`MIDI:<channel>:<device>`). Unset sends nowhere.
+    /// Separate from [`Mixer::output`], which is the audio path (a MIDI track can play an
+    /// instrument into the mix and still drive an external synth).
+    #[serde(default)]
+    pub midi_output: Route,
     pub inserts: Vec<Option<Insert>>,
     pub sends: Vec<Option<SendSlot>>,
     pub automation_mode: AutomationMode,
@@ -599,6 +673,7 @@ impl Mixer {
             phase_invert: false,
             input: Route::None,
             output: Route::Main,
+            midi_output: Route::None,
             inserts: vec![None; INSERT_SLOTS],
             sends: vec![None; SEND_SLOTS],
             automation_mode: AutomationMode::Read,
@@ -678,6 +753,27 @@ pub fn fader_db_to_pos(db: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn midi_endpoint_round_trips_through_the_route() {
+        for (device, channel) in [(None, None), (Some("Keys: with:colons"), None), (None, Some(9)), (Some("Pad"), Some(0))] {
+            let m = MidiEndpoint { device, channel };
+            let r = m.route();
+            assert_eq!(MidiEndpoint::of(&r), m, "{r:?}");
+        }
+        assert_eq!(MidiEndpoint { device: None, channel: None }.route(), Route::None);
+        for h in ["In 1-2", "MIDI:", "MIDI:17:*", "MIDI:0:*", "MIDI:x"] {
+            assert_eq!(MidiEndpoint::of(&Route::Hardware(h.into())).channel, None, "{h}");
+        }
+        let m = MidiEndpoint { device: Some("Pad"), channel: Some(2) };
+        assert!(m.accepts(Some("Pad"), 2));
+        assert!(!m.accepts(Some("Pad"), 3) && !m.accepts(Some("Keys"), 2) && !m.accepts(None, 2));
+        assert!(MidiEndpoint::default().accepts(None, 7));
+        assert_eq!((m.label(), MidiEndpoint::default().label()), ("Pad ch 3".to_string(), "All".to_string()));
+        assert_eq!(MidiEndpoint::default().output_label(), "none");
+        assert_eq!(m.status(0x90), 0x92);
+        assert_eq!(MidiEndpoint::default().status(0x90), 0x90);
+    }
 
     #[test]
     fn insert_state_round_trips_through_json() {

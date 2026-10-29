@@ -63,6 +63,7 @@ use std::ops::Bound;
 mod automation;
 mod clips;
 mod instances;
+mod live_midi;
 mod meter;
 mod midi;
 mod offline;
@@ -73,6 +74,7 @@ mod threads;
 
 use automation::{GainRamp, pan_at, pan_segment, send_level, transport_at, volume_db_at};
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
+pub use live_midi::{ALL_PORTS, LiveMidi, MidiOut, MidiPorts, hears_live_midi};
 pub use meter::StripMeter;
 use midi::sync_sample;
 pub use offline::{
@@ -144,6 +146,12 @@ pub struct MixEngine {
     pub monitor_only: bool,
     /// Recording: record-armed tracks hear their input (auto input).
     pub recording: bool,
+    /// Live MIDI for the next block, filled by the audio host. Cleared by the host each block.
+    pub midi_in: Vec<LiveMidi>,
+    /// Hardware MIDI produced by the last [`MixEngine::render`] (clip playback, thru, all-notes-off).
+    pub midi_out: Vec<MidiOut>,
+    /// Names of the input and output ports `midi_in` / `midi_out` index.
+    pub midi_ports: std::sync::Arc<MidiPorts>,
     /// Mix the metronome (Options > Click) into the output. Playback turns this on; offline renders
     /// (bounces, stems, exports) leave it off so the click is never printed into a file.
     pub metronome: bool,
@@ -181,6 +189,9 @@ impl MixEngine {
             input: Vec::new(),
             monitor_only: false,
             recording: false,
+            midi_in: Vec::new(),
+            midi_out: Vec::new(),
+            midi_ports: std::sync::Arc::new(MidiPorts::default()),
             metronome: false,
             external: false,
             adopt: HashMap::new(),
@@ -346,6 +357,26 @@ impl MixEngine {
         self.busses.retain(|id, _| s.bus(*id).is_some());
     }
 
+    /// Drop sounding notes after the playhead jumps, including on hardware outputs.
+    fn release_on_seek(&mut self, s: &Session) {
+        let ports = std::sync::Arc::clone(&self.midi_ports);
+        for t in &s.tracks {
+            let Some(st) = self.strips.get_mut(&t.id) else { continue };
+            if let Some(i) = &mut st.instrument {
+                st.live.release(&mut *i.plugin);
+                i.plugin.all_notes_off();
+            } else {
+                st.live.clear();
+            }
+            st.held.clear();
+            st.chase = true;
+            st.midi_out.clear();
+            if let Some((port, _)) = live_midi::output_port(t, &ports) {
+                live_midi::panic(port, &mut st.midi_out);
+            }
+        }
+    }
+
     /// Re-syncs plugin instances and the routing order when the session's structure changed
     /// since the last sync (or instances were adopted). `render` calls it; a realtime host may
     /// also call it right after swapping sessions so slots are filled before playback starts.
@@ -395,19 +426,22 @@ impl MixEngine {
         self.order = order;
         self.render_masters(s, blk);
         self.write_output(s, blk, out);
+        self.collect_midi_out();
+    }
+
+    /// Gather hardware MIDI each strip produced this block.
+    fn collect_midi_out(&mut self) {
+        self.midi_out.clear();
+        for st in self.strips.values_mut() {
+            self.midi_out.append(&mut st.midi_out);
+        }
     }
 
     /// Silence what a seek leaves ringing, sync to the session and clear the block's accumulators.
     fn begin_block(&mut self, s: &Session, pos: Samples, frames: usize) {
         if pos != self.last_end {
-            // Seek: silence held notes and ringing plugins.
-            for st in self.strips.values_mut() {
-                if let Some(i) = &mut st.instrument {
-                    i.plugin.all_notes_off();
-                }
-                st.held.clear();
-                st.chase = true;
-            }
+            // Seek: silence held notes and ringing plugins, and tell external synths to let go.
+            self.release_on_seek(s);
         }
         self.last_end = pos.saturating_add(frames as i64);
         self.ensure_synced(s);
@@ -428,6 +462,8 @@ impl MixEngine {
             monitor_only: self.monitor_only,
             recording: self.recording,
             low_latency: s.edit.flag("options.low_latency_monitoring"),
+            midi: &self.midi_in,
+            ports: &self.midi_ports,
         }
     }
 
@@ -492,8 +528,11 @@ impl MixEngine {
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
             let ch = st.buf.len();
-            // Low Latency Monitoring does not wait for other strips' plugins.
-            let direct = s.edit.flag("options.low_latency_monitoring") && hears_live_input(t, &self.live_input(s));
+            // Low Latency Monitoring skips alignment for a track hearing its audio input. An armed
+            // or monitored MIDI/instrument track does the same while recording or stopped, so a
+            // performer is not waiting on the slowest plugin. Bounces leave both off.
+            let live = self.live_input(s);
+            let direct = (live.low_latency && hears_live_input(t, &live)) || ((self.monitor_only || self.recording) && hears_live_midi(s, t));
             let delay = if direct { 0 } else { lmax_t.saturating_sub(st.latency) };
             st.align.set(delay, ch);
             st.align.process(&mut st.buf, frames);
