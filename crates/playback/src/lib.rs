@@ -23,7 +23,13 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod devices;
+pub mod midi_hw;
 pub mod record;
+
+mod midi_sync;
+
+pub use midi_hw::{MidiHub, MidiLink, PortInfo};
+pub use midi_sync::StampedMidi;
 
 pub use devices::AudioConfig;
 
@@ -128,6 +134,8 @@ enum Cmd {
     Locate(Samples),
     /// Tracks the latest session no longer has (worked out on the UI thread): their meters go.
     Forget(Vec<TrackId>),
+    /// The MIDI device queues. Sent when the hub is attached and whenever the player is replaced.
+    Midi(midi_hw::MidiLink),
 }
 
 struct Shared {
@@ -170,6 +178,8 @@ pub struct Player {
     pub device_buffer: Option<u32>,
     /// True when no audio device could be opened (silent clock).
     pub silent: bool,
+    /// MIDI queues shared with the hub, once [`Player::set_midi`] has run.
+    midi: Mutex<Option<midi_hw::MidiLink>>,
 }
 
 impl Player {
@@ -273,6 +283,7 @@ impl Player {
                             device_channels: config.channels,
                             device_buffer: buffer,
                             silent: false,
+                            midi: Mutex::new(None),
                         }
                     }
                     None => {
@@ -350,6 +361,7 @@ impl Player {
             device_channels: 0,
             device_buffer: None,
             silent: true,
+            midi: Mutex::new(None),
         }
     }
 
@@ -373,6 +385,7 @@ impl Player {
             device_channels: 0,
             device_buffer: None,
             silent: true,
+            midi: Mutex::new(None),
         }
     }
 
@@ -478,6 +491,20 @@ impl Player {
 
     pub fn set_recording(&self, on: bool) {
         let _ = self.tx.send(Cmd::Recording(on));
+    }
+
+    /// Hand the hub's queues to the audio callback. Call again after the player is replaced.
+    pub fn set_midi(&self, link: midi_hw::MidiLink) {
+        let _ = self.tx.send(Cmd::Midi(link.clone()));
+        *self.midi.lock().unwrap_or_else(PoisonError::into_inner) = Some(link);
+    }
+
+    /// The MIDI take captured since recording started: the timeline sample it reached, and the
+    /// messages. Drains the queue.
+    pub fn take_midi_record(&self) -> (Samples, Vec<midi_sync::StampedMidi>) {
+        let guard = self.midi.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(link) = guard.as_ref() else { return (0, Vec::new()) };
+        (link.record_end.load(Ordering::Relaxed), link.take_recorded())
     }
 
     pub fn stop(&self) {

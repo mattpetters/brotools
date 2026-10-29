@@ -23,6 +23,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     workspace(app, ctx);
     configurations(app, ctx);
     playback_engine(app, ctx);
+    midi_devices(app, ctx);
     crate::plugin_folders::window(app, ctx);
     io_setup(app, ctx);
     shortcuts_window(app, ctx);
@@ -476,6 +477,103 @@ fn number_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<u32>
         }
     });
     combo.response.accessible_name(name);
+}
+
+/// Setup › MIDI: which input and output ports are open, what just arrived, and clock / MTC out.
+fn midi_devices(app: &mut SoundApp, ctx: &egui::Context) {
+    let mut open = app.ui.show_midi_devices;
+    if !open {
+        return;
+    }
+    let inputs: Vec<soundcraft_playback::PortInfo> = app.midi_hw.inputs().to_vec();
+    let outputs: Vec<soundcraft_playback::PortInfo> = app.midi_hw.outputs().to_vec();
+    let clock = app.engine.session().edit.flag("midi.beat_clock");
+    let mtc = app.engine.session().edit.flag("midi.mtc");
+    let mut refresh = false;
+    let mut clock_set = None;
+    let mut mtc_set = None;
+    let mut input_toggle: Option<(String, bool)> = None;
+    let mut output_toggle: Option<(String, bool)> = None;
+    win(ctx, &mut open, "MIDI Devices", vec2(460.0, 420.0), |ui| {
+        ui.label(
+            "Inputs play record-enabled and input-monitored MIDI and instrument tracks. With MIDI Thru, a keyboard also plays the selected one.",
+        );
+        if ui.button("Refresh").clicked() {
+            refresh = true;
+        }
+        ui.separator();
+        ui.strong("Inputs");
+        if inputs.is_empty() {
+            ui.label("No MIDI inputs. Plug in a keyboard, then Refresh.");
+        }
+        for port in &inputs {
+            ui.horizontal(|ui| {
+                let mut on = port.enabled;
+                if ui.checkbox(&mut on, &port.name).changed() {
+                    input_toggle = Some((port.name.clone(), on));
+                }
+                if port.activity > 0 {
+                    ui.label("●");
+                }
+                if let Some(err) = &port.error {
+                    ui.label(err);
+                } else if port.open {
+                    ui.weak("open");
+                }
+            });
+        }
+        ui.separator();
+        ui.strong("Outputs");
+        if outputs.is_empty() {
+            ui.label("No MIDI outputs.");
+        }
+        for port in &outputs {
+            ui.horizontal(|ui| {
+                let mut on = port.enabled;
+                if ui.checkbox(&mut on, &port.name).changed() {
+                    output_toggle = Some((port.name.clone(), on));
+                }
+                if let Some(err) = &port.error {
+                    ui.label(err);
+                }
+            });
+        }
+        ui.separator();
+        let mut clock_on = clock;
+        if ui.checkbox(&mut clock_on, "MIDI Beat Clock (24 per quarter, while playing)").changed() {
+            clock_set = Some(clock_on);
+        }
+        let mut mtc_on = mtc;
+        if ui.checkbox(&mut mtc_on, "MIDI Time Code (quarter frames, 24/25/29.97/30)").changed() {
+            mtc_set = Some(mtc_on);
+        }
+        ui.weak("A track's MIDI output is chosen on the track. Clock and MTC go to every enabled output.");
+    });
+    app.ui.show_midi_devices = open;
+    if refresh {
+        app.midi_hw.refresh(app.engine.session());
+    }
+    if let Some(on) = clock_set {
+        let _ = app.engine.execute("setup.midi_beat_clock", &json!({"enabled": on}));
+    }
+    if let Some(on) = mtc_set {
+        let _ = app.engine.execute("setup.mtc", &json!({"enabled": on}));
+    }
+    if let Some((name, on)) = input_toggle {
+        set_port_list(app, "setup.midi_input_devices", &inputs, &name, on);
+    }
+    if let Some((name, on)) = output_toggle {
+        set_port_list(app, "setup.midi_output_devices", &outputs, &name, on);
+    }
+}
+
+/// The allow-list is empty until the first toggle, and empty means every port. Turning one off
+/// therefore writes every other port in, so the rest stay open.
+fn set_port_list(app: &mut SoundApp, cmd: &str, ports: &[soundcraft_playback::PortInfo], name: &str, on: bool) {
+    let enable: Vec<&str> = ports.iter().filter(|p| (p.name == name && on) || (p.name != name && p.enabled)).map(|p| p.name.as_str()).collect();
+    let disable: Vec<&str> = if on { Vec::new() } else { vec![name] };
+    let _ = app.engine.execute(cmd, &json!({"enable": enable, "disable": disable}));
+    app.midi_hw.refresh(app.engine.session());
 }
 
 /// Setup › Playback Engine / Hardware: choose the audio system, devices, rate and buffer size.

@@ -63,6 +63,7 @@ use std::ops::Bound;
 mod automation;
 mod clips;
 mod instances;
+mod live_midi;
 mod meter;
 mod midi;
 mod offline;
@@ -73,6 +74,7 @@ mod threads;
 
 use automation::{GainRamp, pan_at, pan_segment, send_level, transport_at, volume_db_at};
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
+pub use live_midi::{ALL_PORTS, LiveMidi, MidiOut, MidiPorts, hears_live_midi};
 pub use meter::StripMeter;
 use midi::sync_sample;
 pub use offline::{
@@ -134,6 +136,12 @@ pub struct MixEngine {
     pub monitor_only: bool,
     /// Recording: record-armed tracks hear their input (auto input).
     pub recording: bool,
+    /// Live MIDI for the next block, filled by the audio host. Cleared by the host each block.
+    pub midi_in: Vec<LiveMidi>,
+    /// Hardware MIDI produced by the last [`MixEngine::render`] (clip playback, thru, all-notes-off).
+    pub midi_out: Vec<MidiOut>,
+    /// Names of the input and output ports `midi_in` / `midi_out` index.
+    pub midi_ports: std::sync::Arc<MidiPorts>,
     /// Mix the metronome (Options > Click) into the output. Playback turns this on; offline renders
     /// (bounces, stems, exports) leave it off so the click is never printed into a file.
     pub metronome: bool,
@@ -170,6 +178,9 @@ impl MixEngine {
             input: Vec::new(),
             monitor_only: false,
             recording: false,
+            midi_in: Vec::new(),
+            midi_out: Vec::new(),
+            midi_ports: std::sync::Arc::new(MidiPorts::default()),
             metronome: false,
             external: false,
             adopt: HashMap::new(),
@@ -335,6 +346,26 @@ impl MixEngine {
         self.busses.retain(|id, _| s.bus(*id).is_some());
     }
 
+    /// Drop sounding notes after the playhead jumps, including on hardware outputs.
+    fn release_on_seek(&mut self, s: &Session) {
+        let ports = std::sync::Arc::clone(&self.midi_ports);
+        for t in &s.tracks {
+            let Some(st) = self.strips.get_mut(&t.id) else { continue };
+            if let Some(i) = &mut st.instrument {
+                st.live.release(&mut *i.plugin);
+                i.plugin.all_notes_off();
+            } else {
+                st.live.clear();
+            }
+            st.held.clear();
+            st.chase = true;
+            st.midi_out.clear();
+            if let Some((port, _)) = live_midi::output_port(t, &ports) {
+                live_midi::panic(port, &mut st.midi_out);
+            }
+        }
+    }
+
     /// Re-syncs plugin instances and the routing order when the session's structure changed
     /// since the last sync (or instances were adopted). `render` calls it; a realtime host may
     /// also call it right after swapping sessions so slots are filled before playback starts.
@@ -368,7 +399,13 @@ impl MixEngine {
             }
         }
         let busses = std::mem::take(&mut self.busses);
-        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+        let live_in = LiveInput {
+            input: &self.input,
+            monitor_only: self.monitor_only,
+            recording: self.recording,
+            midi: &self.midi_in,
+            ports: &self.midi_ports,
+        };
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
                 process_strip(s, t, st, &busses, &live_in, blk);
@@ -384,19 +421,22 @@ impl MixEngine {
         self.order = order;
         self.render_masters(s, blk);
         self.write_output(s, blk, out);
+        self.collect_midi_out();
+    }
+
+    /// Gather hardware MIDI each strip produced this block.
+    fn collect_midi_out(&mut self) {
+        self.midi_out.clear();
+        for st in self.strips.values_mut() {
+            self.midi_out.append(&mut st.midi_out);
+        }
     }
 
     /// Silence what a seek leaves ringing, sync to the session and clear the block's accumulators.
     fn begin_block(&mut self, s: &Session, pos: Samples, frames: usize) {
         if pos != self.last_end {
-            // Seek: silence held notes and ringing plugins.
-            for st in self.strips.values_mut() {
-                if let Some(i) = &mut st.instrument {
-                    i.plugin.all_notes_off();
-                }
-                st.held.clear();
-                st.chase = true;
-            }
+            // Seek: silence held notes and ringing plugins, and tell external synths to let go.
+            self.release_on_seek(s);
         }
         self.last_end = pos.saturating_add(frames as i64);
         self.ensure_synced(s);
@@ -453,10 +493,15 @@ impl MixEngine {
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
             let ch = st.buf.len();
-            st.align.set(lmax_t.saturating_sub(st.latency), ch);
+            // A performer hears an armed or monitored instrument without waiting for the slowest
+            // plugin in the session. Bounces leave `monitor_only` and `recording` off, so they
+            // stay aligned.
+            let low = (self.monitor_only || self.recording) && hears_live_midi(s, t);
+            let delay = if low { 0 } else { lmax_t.saturating_sub(st.latency) };
+            st.align.set(delay, ch);
             st.align.process(&mut st.buf, frames);
             if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
-                st.align_pre.set(lmax_t.saturating_sub(st.latency), ch);
+                st.align_pre.set(delay, ch);
                 st.align_pre.process(&mut st.pre, frames);
             }
             let waits = match &t.mixer.output {
@@ -464,7 +509,7 @@ impl MixEngine {
                 Route::Bus(b) => self.aux_fed.contains(b),
                 _ => false,
             };
-            st.out_extra.set(if waits { lmax_a } else { 0 }, ch);
+            st.out_extra.set(if low || !waits { 0 } else { lmax_a }, ch);
         }
         for (i, st) in work.iter_mut() {
             if let Some(t) = s.tracks.get(*i) {
@@ -488,7 +533,13 @@ impl MixEngine {
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
-            let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+            let live_in = LiveInput {
+                input: &self.input,
+                monitor_only: self.monitor_only,
+                recording: self.recording,
+                midi: &self.midi_in,
+                ports: &self.midi_ports,
+            };
             process_strip(s, t, &mut st, &self.busses, &live_in, blk);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);

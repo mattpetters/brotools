@@ -17,7 +17,7 @@ mod sends;
 mod slots;
 
 pub use plugin_menu::{instrument_menu, plugin_info, plugin_menu};
-pub(crate) use routing::{input_name, route_name, route_popup};
+pub(crate) use routing::{input_name, midi_output_name, route_name, route_popup};
 #[cfg(test)]
 use sends::dragged_send_db;
 use sends::{Readout, editable_readout, parse_db, parse_pan};
@@ -257,8 +257,9 @@ fn instrument_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y:
         match slot {
             _ if track.kind == TrackKind::Instrument => instrument_slot(app, ui, track, sr),
             Some(k) => insert_slot(app, ui, track, k, sr),
-            None if track.kind == TrackKind::Midi => {
-                ui.painter().text(sr.center(), Align2::CENTER_CENTER, "MIDI in: all", regular(9.0), t.text_dim);
+            None if track.kind.is_midi() => {
+                let label = format!("in {} · out {}", input_name(app, track), midi_output_name(track));
+                ui.painter().text(sr.center(), Align2::CENTER_CENTER, label, regular(9.0), t.text_dim);
             }
             None => {}
         }
