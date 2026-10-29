@@ -56,11 +56,17 @@ where
     let frame = channels.max(1);
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
+    let rate = config.sample_rate;
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
+    let latency = Arc::clone(fault);
     device.build_output_stream(
         config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
             mark_audio_thread();
+            let ts = info.timestamp();
+            if let Some(frames) = latency_frames(ts.playback, ts.callback, rate) {
+                latency.output_latency.store(frames, Ordering::Relaxed);
+            }
             for out in data.chunks_mut(chunk) {
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
@@ -130,6 +136,16 @@ pub(crate) fn open_device(
         }
     };
     Ok((device, config, format, name))
+}
+
+/// Frames between two stream instants at `rate` Hz. `None` when the instants are unordered or absurd.
+pub(crate) fn latency_frames(later: cpal::StreamInstant, earlier: cpal::StreamInstant, rate: u32) -> Option<u32> {
+    let elapsed = later.checked_duration_since(earlier)?;
+    let frames = elapsed.as_secs_f64() * f64::from(rate);
+    if !(0.0..=1_000_000.0).contains(&frames) {
+        return None;
+    }
+    u32::try_from(frames.round() as i64).ok()
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured
