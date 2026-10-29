@@ -185,10 +185,9 @@ impl MediaResolver for LocalMedia {
         if chosen.parent() != Some(self.media_dir.as_path()) {
             return Err(MediaError::Invalid(format!("relink escapes the media folder: {}", chosen.display())));
         }
-        if !chosen.is_file() {
+        if !crate::io::file_found(&chosen) {
             return Err(MediaError::Missing(chosen.display().to_string()));
         }
-        crate::file_access::check_read(&chosen).map_err(MediaError::Invalid)?;
         let file = crate::io::open_read(&chosen).map_err(|e| MediaError::Invalid(e.to_string()))?;
         let info = wav_info(BufReader::new(file)).map_err(|e| MediaError::Invalid(format!("{}: {e}", chosen.display())))?;
         let from = (chosen != locator).then(|| locator.display().to_string());
@@ -206,7 +205,7 @@ pub(crate) fn read_aaf_plan(path: &str, media_dir: &str, composition: Option<&st
     let bytes = crate::io::read_capped(Path::new(path), 512 * 1024 * 1024)?;
     let aaf = crate::io::canonical(Path::new(path));
     let media = crate::io::canonical(Path::new(media_dir));
-    if !media.is_dir() {
+    if !crate::io::dir_found(&media) {
         return Err(bad("choose the folder that holds the AAF's WAV files"));
     }
     let stem = aaf.file_stem().and_then(|s| s.to_str()).unwrap_or("Session");

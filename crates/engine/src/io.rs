@@ -101,6 +101,13 @@ pub fn file_found(path: impl AsRef<Path>) -> bool {
     crate::file_access::check_read(path).is_ok() && path.is_file()
 }
 
+/// Is there a directory at `path` the automation read root lets us see? A path outside the root
+/// is reported as not found, so a command can't probe for folders beyond it.
+pub(crate) fn dir_found(path: impl AsRef<Path>) -> bool {
+    let path = path.as_ref();
+    crate::file_access::check_read(path).is_ok() && path.is_dir()
+}
+
 /// The file a path stored in the session file `session` refers to, or why it is not opened.
 ///
 /// Every path a session names (audio sources, movies) goes through here before it reaches the
