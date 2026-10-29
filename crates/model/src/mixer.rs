@@ -399,13 +399,70 @@ pub struct Bus {
     pub format: ChannelFormat,
 }
 
+fn path_on() -> bool {
+    true
+}
+
+fn is_path_on(active: &bool) -> bool {
+    *active
+}
+
+/// Hardware channels a path occupies. An explicit list wins; otherwise the path is contiguous
+/// from `first` for its format (at most 16 channels).
+pub fn path_channels(explicit: &[u16], first: u16, format: ChannelFormat) -> Vec<u16> {
+    if !explicit.is_empty() {
+        return explicit.iter().copied().take(16).collect();
+    }
+    let n = format.channels().clamp(1, 16);
+    (0..n).map(|k| first.saturating_add(u16::try_from(k).unwrap_or(0))).collect()
+}
+
+/// A named hardware input (Pro Tools input path). Tracks record and monitor it by name.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct InputPath {
+    pub name: String,
+    /// First hardware channel (0-based), used when `channels` is empty.
+    pub first_channel: u16,
+    pub format: ChannelFormat,
+    /// Explicit hardware channels (0-based). Empty means contiguous from `first_channel`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<u16>,
+    #[serde(default = "path_on", skip_serializing_if = "is_path_on")]
+    pub active: bool,
+}
+
+impl InputPath {
+    pub fn new(name: impl Into<String>, first_channel: u16, format: ChannelFormat) -> Self {
+        InputPath { name: name.into(), first_channel, format, channels: Vec::new(), active: true }
+    }
+
+    pub fn resolved_channels(&self) -> Vec<u16> {
+        path_channels(&self.channels, self.first_channel, self.format)
+    }
+}
+
 /// Physical output paths (from the I/O setup).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OutputPath {
     pub name: String,
-    /// First hardware channel (0-based).
+    /// First hardware channel (0-based), used when `channels` is empty.
     pub first_channel: u16,
     pub format: ChannelFormat,
+    /// Explicit hardware channels (0-based). Empty means contiguous from `first_channel`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<u16>,
+    #[serde(default = "path_on", skip_serializing_if = "is_path_on")]
+    pub active: bool,
+}
+
+impl OutputPath {
+    pub fn new(name: impl Into<String>, first_channel: u16, format: ChannelFormat) -> Self {
+        OutputPath { name: name.into(), first_channel, format, channels: Vec::new(), active: true }
+    }
+
+    pub fn resolved_channels(&self) -> Vec<u16> {
+        path_channels(&self.channels, self.first_channel, self.format)
+    }
 }
 
 /// Where a signal goes or comes from.

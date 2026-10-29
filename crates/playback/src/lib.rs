@@ -23,12 +23,15 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod devices;
+mod duplex;
 pub mod record;
+
+pub use duplex::{input_device_name, record_offset_samples, run_duplex, wants_same_device};
 
 pub use devices::AudioConfig;
 
 use soundcraft_dsp::{Plugin, PluginEditor, PluginStateReader};
-use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
+use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels, playback_channels};
 use soundcraft_model::{Session, TrackId};
 use soundcraft_time::{Range, Samples};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -186,6 +189,11 @@ impl Player {
         // Hand the initial session's third-party plugins over.
         p.update_session(session);
         p
+    }
+
+    /// Output latency the driver last reported, in frames. Zero until a callback has a timestamp.
+    pub fn output_latency_frames(&self) -> u32 {
+        self.fault.output_latency.load(Ordering::Relaxed)
     }
 
     /// What stopped the audio output, once: a bug in the engine, or the device went away or

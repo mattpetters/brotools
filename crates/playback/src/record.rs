@@ -91,6 +91,8 @@ struct Shared {
     dropped: AtomicUsize,
     /// Input callbacks so far, to tell a device that stopped sending.
     beats: AtomicU64,
+    /// Input latency the driver last reported, in frames.
+    input_latency: AtomicU32,
     /// Set from the input stream when it can't go on: `GONE` or `BROKEN`.
     fault: AtomicU8,
     /// The first failure writing a take, until it's reported.
@@ -100,7 +102,7 @@ struct Shared {
 impl Shared {
     fn new(ring: CaptureRing) -> Shared {
         let (beats, fault, failed) = (AtomicU64::new(0), AtomicU8::new(0), Mutex::new(None));
-        Shared { armed: AtomicBool::new(false), ring, dropped: AtomicUsize::new(0), beats, fault, failed }
+        Shared { armed: AtomicBool::new(false), ring, dropped: AtomicUsize::new(0), beats, fault, failed, input_latency: AtomicU32::new(0) }
     }
 
     /// Run the input callback's `work`. After a panic in it, the input is broken and does
@@ -154,13 +156,19 @@ where
     use cpal::traits::DeviceTrait;
     let (sh, errors) = (Arc::clone(shared), Arc::clone(shared));
     let mon = Arc::clone(monitor);
+    let rate = config.sample_rate;
+    let latency = Arc::clone(shared);
     let mut scratch = vec![0.0f32; 8192 * usize::from(config.channels).max(1)];
     let chunk = scratch.len();
     let mut owed = 0;
     device.build_input_stream(
         config,
-        move |data: &[T], _: &cpal::InputCallbackInfo| {
+        move |data: &[T], info: &cpal::InputCallbackInfo| {
             crate::mark_audio_thread();
+            let ts = info.timestamp();
+            if let Some(frames) = crate::stream::latency_frames(ts.callback, ts.capture, rate) {
+                latency.input_latency.store(frames, Ordering::Relaxed);
+            }
             sh.guarded(|| {
                 for part in data.chunks(chunk) {
                     let Some(s) = scratch.get_mut(..part.len()) else { return };
@@ -323,6 +331,11 @@ impl Recorder {
             self.seen = (beats, Instant::now());
         }
         (self.seen.1.elapsed() >= STALL).then(|| Trouble::Device(format!("“{name}” stopped sending audio")))
+    }
+
+    /// Input latency the driver last reported, in frames. Zero until a callback has a timestamp.
+    pub fn input_latency_frames(&self) -> u32 {
+        self.shared.input_latency.load(Ordering::Relaxed)
     }
 
     /// Input the current take has lost to a slow disk so far, in milliseconds.
@@ -612,6 +625,24 @@ mod tests {
     }
 }
 
+/// Drop oldest frames once the queue is far past one callback of slack. `phase` restarts at the
+/// frames that remain, which are the newest ones.
+fn trim_backlog(s: &mut RingState, channels: usize, read_frames: usize, last_push: usize) {
+    if last_push == 0 {
+        return;
+    }
+    let ch = channels.max(1);
+    let queued = s.data.len() / ch;
+    let need = last_push.saturating_add(read_frames).saturating_add(32);
+    let gate = need.max(128);
+    if queued <= need.saturating_add(gate) {
+        return;
+    }
+    let drop = queued.saturating_sub(need).saturating_mul(ch).min(s.data.len());
+    s.data.drain(..drop);
+    s.phase = 0.0;
+}
+
 /// Ring state behind the lock: interleaved input frames at the input device's rate, plus the
 /// fractional read position (in input frames) of the next output sample.
 struct RingState {
@@ -626,6 +657,8 @@ struct RingState {
 pub struct InputRing {
     state: Mutex<RingState>,
     pub channels: std::sync::atomic::AtomicUsize,
+    /// Frames in the last push that landed, so a later read can drop a stale backlog.
+    last_push: AtomicUsize,
     /// Input device sample rate in Hz (0 when unknown, which reads as "same as the session").
     rate: u32,
     /// Most samples kept: half a second of input, or 24 000 frames when the rate is unknown.
@@ -639,6 +672,7 @@ impl InputRing {
         Arc::new(InputRing {
             state: Mutex::new(RingState { data: std::collections::VecDeque::with_capacity(rate.max(48_000) as usize * ch), phase: 0.0 }),
             channels: std::sync::atomic::AtomicUsize::new(ch),
+            last_push: AtomicUsize::new(0),
             rate,
             cap: frames * ch,
         })
@@ -649,6 +683,11 @@ impl InputRing {
             s.data.extend(samples.iter().copied().map(finite));
             while s.data.len() > self.cap {
                 s.data.pop_front();
+            }
+            let ch = self.channels.load(Ordering::Relaxed).max(1);
+            let frames = samples.len() / ch;
+            if frames > 0 {
+                self.last_push.store(frames, Ordering::Relaxed);
             }
         }
     }
@@ -661,6 +700,11 @@ impl InputRing {
             c.iter_mut().take(frames).for_each(|x| *x = 0.0);
         }
         let Ok(mut s) = self.state.try_lock() else { return };
+        // Drop a backlog that would be heard as latency. One input callback plus this read, plus
+        // 32 frames of slack, is enough; ordinary jitter (one extra callback) is left alone.
+        // The allowance has to be exceeded by itself, or by 128 frames, before anything is dropped
+        // (upstream soundcraft#808).
+        trim_backlog(&mut s, ch, frames, self.last_push.load(Ordering::Relaxed));
         // Input frames consumed per output frame.
         let step = if self.rate == 0 || session_rate == 0 { 1.0 } else { f64::from(self.rate) / f64::from(session_rate) };
         for f in 0..frames {
@@ -740,6 +784,35 @@ mod ring_tests {
         let mut out = vec![vec![1.0f32; 16]];
         ring.pop_into(&mut out, 16, 48_000);
         assert!(out[0].iter().all(|v| *v == 0.0));
+    }
+
+    /// A long queue is not kept as monitoring latency: the read hears the newest callbacks.
+    #[test]
+    fn monitor_backlog_is_dropped() {
+        let ring = InputRing::new(1, 48_000);
+        for n in 0..200 {
+            let block: Vec<f32> = (0..64).map(|i| (n * 64 + i) as f32).collect();
+            ring.push(&block);
+        }
+        let mut out = vec![vec![0.0f32; 64]];
+        ring.pop_into(&mut out, 64, 48_000);
+        // Kept: one callback (64) + this read (64) + 32 frames of slack = 160 frames, the newest.
+        let newest = 200 * 64;
+        let kept_from = newest - 160;
+        assert_eq!(out[0][0], kept_from as f32);
+        assert_eq!(out[0][63], (kept_from + 63) as f32);
+    }
+
+    /// Two callbacks of jitter are played oldest-first, not trimmed.
+    #[test]
+    fn monitor_jitter_is_not_trimmed() {
+        let ring = InputRing::new(1, 48_000);
+        ring.push(&(0..64).map(|i| i as f32).collect::<Vec<_>>());
+        ring.push(&(0..64).map(|i| 1000.0 + i as f32).collect::<Vec<_>>());
+        let mut out = vec![vec![0.0f32; 64]];
+        ring.pop_into(&mut out, 64, 48_000);
+        assert_eq!(out[0][0], 0.0);
+        assert_eq!(out[0][63], 63.0);
     }
 
     /// NaN and infinities from the device monitor as silence.
