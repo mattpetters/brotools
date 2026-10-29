@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-10-19 · **Change:** trivial (Float32 file headroom, #791) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (partial Pro Tools session read) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every format Pro Tools reads or writes, and ours. The Pro Tools list comes from the document types
 its bundle declares (`CFBundleDocumentTypes` in Info.plist: names only, nothing else read) and its
@@ -8,8 +8,9 @@ documented import/bounce options. Ours comes from `crates/audio-io` (`FileFormat
 `FileFormat::WRITE`, `detect_format`, `decode`), `crates/engine/src/cmd/file.rs`,
 `crates/engine/src/score.rs`, `crates/engine/src/clip_group_file.rs` and `crates/video`.
 
-**File formats: ~40 % ready** (estimated: weighted by how often a Pro Tools user hits each row;
-session interchange carries a third of the weight and is at 0 %). Remaining ≈ 70–120 h.
+**File formats: ~45 % ready** (estimated: weighted by how often a Pro Tools user hits each row;
+session interchange carries a third of the weight and is now a partial `.ptx` read, still no write,
+AAF, or OMF). Remaining ≈ 60–100 h.
 
 Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not applicable.
 
@@ -17,8 +18,8 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 
 | Format | Pro Tools | Read | Write | Tests / notes |
 |---|---|---|---|---|
-| Pro Tools session `.ptx` (and `.ptf` from 7–9) | native | ❌ | ❌ | Proprietary, undocumented. Owner decision needed on black-box format study (G-03) |
-| Session templates `.ptxt` | read/write | ❌ | ❌ | We have no templates at all (G-16) |
+| Pro Tools session `.ptx` (and `.ptf` / `.pts` from 5–9) | native | 🟡 | ❌ | Clean-room read in `soundcraft-ptx` from [formats/ptx.md](formats/ptx.md). Tracks, names, order, a documented folder tag, mono/stereo (and a few surround widths), bus paths, per-track output names, plug-in name strings, markers, picture rate, sample rate, clips, and audio paths. Not restored: tempo, meter, bit depth, colors, sends, inputs, plug-in parameters, fades, aux/master/instrument as distinct kinds. No write |
+| Session templates `.ptxt` | read/write | 🟡 | ❌ | Same container as `.ptx` (G-16 still has no template browser) |
 | AAF (Advanced Authoring Format) | import/export | ❌ | ❌ | #40. The post-production handoff from picture editors (G-03) |
 | OMF | import/export | ❌ | ❌ | Legacy, still delivered by some editors |
 | Media Composer–compatible session | export | ❌ | ❌ | AAF variant |
@@ -80,6 +81,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | Partial `.ptx`/`.ptxt`/`.ptf`/`.pts` read (`soundcraft-ptx`, [formats/ptx.md](formats/ptx.md)). File-format readiness ~40 % → ~45 %. Write, AAF, and OMF are still absent |
 | 2026-10-19 | trivial | WAV and AIFF-C Float32 encoders retain finite headroom (#791); whole-file, streaming and bounce regression tests |
 | 2026-10-13 | trivial | WAV: empty data chunk with trailing metadata (#466) |
 | 2026-10-13 | minor | Fade curvature round-trips in sessions with a zero default for older files. Format version and readiness estimate unchanged |

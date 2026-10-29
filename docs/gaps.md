@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-10-25 · **Change:** trivial (G-04: Clip Looping crossfade and loop count; previously trivial: G-08 and G-20: built-in plugin count, the sampler shipped) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (G-03: partial Pro Tools session read; AAF/OMF and `.ptx` write remain) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -17,7 +17,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
 | G-02 | **Alpha blocker.** No MIDI device input or output | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 20–35 |
-| G-03 | **Alpha blocker.** Cannot exchange sessions with Pro Tools (no AAF/OMF, no `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
+| G-03 | **Alpha blocker.** Cannot hand a session back to Pro Tools (no `.ptx` write, no AAF/OMF). `.ptx`/`.ptxt`/`.ptf` read is partial | File formats | [file-format-parity.md](file-format-parity.md) | 40–70 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 15–25 |
 | G-06 | (Record-to-disk part: alpha blocker for the tracking row) Sources decoded whole into RAM; recording into RAM | Performance | [hardware-parity.md](hardware-parity.md) | 15–25 |
@@ -70,13 +70,17 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 ### G-03. Session interchange with Pro Tools
 
-- **Missing:** opening or saving `.ptx`/`.ptf`, AAF and OMF import and export (#40), Media
-  Composer–compatible sessions. Our session format is `.scraft` JSON.
-- **Impact:** the standard's main-format bar for beta. A Pro Tools user cannot bring a project in
-  or hand one back; post-production (picture editors deliver AAF) is blocked.
-- **Estimate:** AAF/OMF import + export ≈ 50–90 h (FilmCraft already writes AAF/OMF; we can learn
-  from it but not share code). `.ptx` is proprietary and undocumented: owner decision on whether
-  black-box format study is in the clean-room rules; not included in the estimate.
+- **In:** opening `.ptx`, `.ptxt`, `.ptf`, and `.pts` into a session, with a fidelity report.
+  The reader is `soundcraft-ptx`, specified in [formats/ptx.md](formats/ptx.md). It restores
+  tracks (audio, MIDI, a basic folder tag), names and order, channel width, bus paths and a
+  per-track output name, plug-in name strings, memory locations, picture rate, sample rate,
+  clips, and audio file paths. Tempo, meter, bit depth, colors, sends, inputs, plug-in
+  parameters, fades, and aux/master/instrument as distinct kinds are reported and not restored.
+- **Missing:** saving `.ptx`/`.ptf`, AAF and OMF import and export (#40), Media Composer–compatible
+  sessions. Our session format is still `.scraft` JSON.
+- **Impact:** a Pro Tools user can bring a template or session in and see what was dropped. They
+  still cannot hand a session back, and picture editors still deliver AAF.
+- **Estimate:** AAF/OMF import + export, plus `.ptx` write, ≈ 40–70 h. `.ptx` write is not started.
 
 ### G-04. Correctness bugs in "done" features
 
@@ -225,6 +229,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | G-03: partial `.ptx`/`.ptxt`/`.ptf`/`.pts` read with a fidelity report. Write, AAF, and OMF remain; estimate 50–90 → 40–70 |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |
 | 2026-10-19 | trivial | G-04: Float32 encoding retains finite headroom (#791); integer clipping and non-finite handling retained |

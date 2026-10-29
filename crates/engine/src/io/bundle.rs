@@ -97,6 +97,9 @@ pub(super) fn save_session_bundle(e: &mut Engine, path: &str) -> Result<usize> {
 /// `.scraft`, whose audio is then reported missing. Returns the missing media, like
 /// [`open_session`].
 pub fn open_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Vec<String>> {
+    if soundcraft_ptx::is_pro_tools_path(name) {
+        return super::ptx::open_pro_tools_bytes(e, name, bytes).map(|opened| opened.missing);
+    }
     let (text, mut files) = if bytes.starts_with(b"PK\x03\x04") {
         read_bundle(bytes, BUNDLE_LIMITS)?
     } else {

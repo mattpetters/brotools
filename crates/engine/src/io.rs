@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod bundle;
 mod import;
 mod midi;
+mod ptx;
 mod record;
 mod render;
 mod session;
@@ -23,6 +24,7 @@ pub use bundle::{BUNDLE_EXTENSION, open_session_bytes, session_bundle};
 pub use import::{DecodedImport, add_source, decode_import, import_audio_bytes, load_sampler_bytes, relink_videos};
 pub(crate) use import::{MAX_IMPORT_SAMPLES, at_rate, place_decoded};
 pub use midi::{export_midi, import_midi_bytes};
+pub use ptx::{ProToolsOpened, open_pro_tools, open_pro_tools_bytes};
 pub use record::{Recording, Take, add_recording, live_span, place_recording};
 pub use render::{commit_track, consolidate, refuse_longer, render_clip_gain, render_limit, sanitize_name};
 pub(crate) use session::{DecodedFiles, decode_file, open_session_linked};
@@ -47,6 +49,21 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
     if !std::fs::metadata(path).map_err(err)?.is_file() {
         return Err(EngineError::Io(format!("{}: not a regular file", path.display())));
+    }
+    std::fs::read(path).map_err(err)
+}
+
+/// [`read_file`], refusing anything larger than `max_bytes` before the bytes are read.
+pub fn read_limited(path: impl AsRef<Path>, max_bytes: u64) -> Result<Vec<u8>> {
+    let path = path.as_ref();
+    crate::file_access::check_read(path).map_err(EngineError::Io)?;
+    let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
+    let meta = std::fs::metadata(path).map_err(err)?;
+    if !meta.is_file() {
+        return Err(EngineError::Io(format!("{}: not a regular file", path.display())));
+    }
+    if meta.len() > max_bytes {
+        return Err(EngineError::Io(format!("{}: larger than {max_bytes} bytes", path.display())));
     }
     std::fs::read(path).map_err(err)
 }
