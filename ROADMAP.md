@@ -1,8 +1,8 @@
 # SoundCraft roadmap
 
-**Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
+**Stage: pre-alpha** · next: alpha, ~5% and ~45–80 h away (duplex recording still fails; MIDI and AAF/DAWproject interchange are partial)
 
-> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (MIDI devices; same-device duplex and record offset) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (MIDI devices and duplex I/O; AAF and DAWproject subset) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -15,12 +15,12 @@ menu checklist).
 
 | Number | Value | Kind |
 |---|---|---|
-| Menu breadth | **482 / 512 Pro Tools menu leaves (94.1 %)**; engine alone 397 / 512 | measured (`cargo xtask parity` + UI-layer aliases) |
+| Menu breadth | **482 / 512 Pro Tools menu leaves (94.1 %)**; engine alone 398 / 512 | measured (`cargo xtask parity` + UI-layer aliases). Engine count includes Session Data and Selected Tracks as New AAF/OMF |
 | Feature breadth | **~70 %** | estimated (menus plus plugins, hardware, formats, immersive, cloud) |
 | **Ready for real work** | **~40 %** | estimated, weighted by dimension |
 | Mainstream practitioner (tracking/mixing engineer) | **~36 %** | estimated: 50.6 % weekly-area depth × 0.90 interaction × 0.92 stability × 0.85 file exchange ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
 | Essentials user (song or podcast, defaults) | **~57 %** | estimated: 72.4 % core-feature depth × 0.90 launch/stability × 0.90 discoverability × 0.97 files ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
-| Remaining to alpha | **~110–180 Opus 5.5 agent-hours** (the failing gate rows) | estimated, calibrated on PR history |
+| Remaining to alpha | **~45–80 Opus 5.5 agent-hours** (duplex recording still fails; MIDI and session exchange are partial) | estimated, calibrated on PR history |
 | Remaining to beta | **~350–570 Opus 5.5 agent-hours** (includes the alpha work; ~60–70 % parallelizable) | estimated |
 | Remaining to full parity | **~950–1,450 Opus 5.5 agent-hours** | estimated |
 
@@ -39,8 +39,9 @@ record from a chosen audio interface at a chosen buffer size with one OS-level d
 (device and buffer choice, same-device record/playback, record offset and record-to-disk exist;
 the mix is still a fixed 512-sample block and it has not been verified on hardware). MIDI from a
 keyboard can be recorded and played through an instrument, and sent to a hardware port, but that
-path is not yet confirmed on a physical controller on macOS. And they can't bring a session in or
-hand one back (no AAF/OMF/`.ptx`).
+path is not yet confirmed on a physical controller on macOS. Session interchange is a tested AAF
+and DAWproject subset (tracks, clips, offsets, fades, clip gain, volume/pan, markers, embedded or
+linked WAV). OMF and `.ptx` are still closed, so a native Pro Tools session still cannot be opened.
 Readiness (~40 %) sits right at the alpha bar, but a gate failure keeps the app pre-alpha. The
 2026-10-07 estimate ("~65 % overall, 110–150 h to 100 %") counted feature presence. This one
 measures readiness and adds hardware, localization and field bug reports.
@@ -51,7 +52,7 @@ measures readiness and adds hardware, localization and field bug reports.
 |---|---:|---:|---|
 | Features | ~45 % | 520–810 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
 | UI/UX fidelity | ~55 % | 60–100 | [ui-parity.md](docs/ui-parity.md) |
-| File formats | ~40 % | 70–120 | [file-format-parity.md](docs/file-format-parity.md) |
+| File formats | ~50 % | 45–80 | [file-format-parity.md](docs/file-format-parity.md) |
 | Hardware (interfaces, MIDI, surfaces, sync) | ~12 % | 110–180 | [hardware-parity.md](docs/hardware-parity.md) |
 | Localization | ~12 % (1 of Pro Tools' 8 languages) | 70–110 | [localization-parity.md](docs/localization-parity.md) |
 | Performance | ~35 % (unmeasured) | 40–70 | [hardware-parity.md](docs/hardware-parity.md#performance) |
@@ -105,9 +106,9 @@ Other languages shipped: 0. Detail: [localization-parity.md](docs/localization-p
 
 Ranked; the alpha gate, the alpha checklist and the beta plan are in [docs/roadmap.md](docs/roadmap.md).
 
-1. **Alpha blocker:** audio interfaces: device and buffer-size choice, duplex stream, ASIO; record to disk (G-01, G-06). 35–55 h.
-2. **Alpha blocker:** MIDI devices: record from keyboards, play instruments live, output (G-02). 20–35 h.
-3. **Alpha blocker:** AAF/OMF import and export (G-03). 50–90 h.
+1. **Alpha blocker:** one OS duplex callback, a mix block that follows the device buffer, and on-device verification (G-01). 15–25 h.
+2. MIDI hardware pass on macOS and Windows, plus MTC chase and MMC (G-02). 8–15 h.
+3. Broader session interchange: OMF, more AAF from other editors, and a decision on `.ptx` (G-03). 20–40 h.
 4. macOS plugin entitlement (#153), then AU editors (G-05). 1 h for the entitlement (needed for the mix row), then 15–25 h.
 5. Land the open bug-fix PRs and clear the correctness backlog (G-04). 15–25 h.
 6. PR CI running `cargo xtask ci` on three OSes (G-14). 5–10 h.
@@ -125,6 +126,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
+- **2026-10-29:** File ▸ Import ▸ Session Data… and File ▸ Export ▸ Selected Tracks as New AAF/OMF… read and write an AAF and DAWproject subset: audio tracks, clips with source offsets, fade in/out, clip gain, volume and pan automation, markers, and embedded or linked PCM WAV. Round-trip tests cover both containers, and the synthetic external-WAV AAF from upstream pull request 799 still imports. OMF and Pro Tools `.ptx` stay unsupported (LGPL readers are not copied). File formats ~40 % → ~50 %. Overall readiness stays ~40 % because duplex recording still fails the alpha gate.
 - **2026-10-29:** MIDI input and output devices (CoreMIDI, WinMM, ALSA). A keyboard plays armed and input-monitored instrument tracks, records onto MIDI and instrument tracks (punch, loop, merge), and a track can send to a hardware port. Beat clock and quarter-frame MTC go out while playing. Not yet confirmed on a physical controller on macOS or Windows. No readiness percentage change.
 - **2026-10-29:** Record and playback can share one device, rate and buffer. Named input and output paths carry hardware channel lists, and a take is shifted by the driver's input plus output latency (or two buffers when the driver reports none). Low Latency Monitoring bypasses inserts and plugin-delay alignment on tracks that are hearing their input. Recording already streams to disk. The mix block is still 512 samples, cpal still uses two callbacks, and playback still decodes whole files. No readiness percentage change.
 - **2026-10-25:** Tracks and Groups and the Clip List sit in dock columns that run the Edit window's full height at its left and right edges, with the MIDI Editor under the session view between them; Mix docks Tracks and Groups at its left edge. A panel dragged onto a dock group joins it as a tab, stacks above or below it, or makes a new column; one dragged to an empty window edge makes a dock there. A list with no saved place reopens in its dock, and makes the dock again when it is gone. Preferences and window configurations saved with the earlier split-frame layouts load with the new default layouts and keep their other settings. No readiness percentage change.
@@ -181,6 +183,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | AAF and DAWproject subset (tracks, clips, fades, clip gain, volume/pan, markers, PCM). File formats ~50 %. OMF and `.ptx` remain. Headline readiness stays ~40 % |
 | 2026-10-29 | major | MIDI input and output devices, live play-through, recording, beat clock and MTC out. Readiness percentages unchanged |
 | 2026-10-29 | trivial | Progress log: same-device duplex, I/O paths, record offset; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: side panels in dock columns; readiness estimates unchanged |

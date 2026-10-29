@@ -20,6 +20,7 @@ mod event_more;
 mod file;
 mod health;
 mod instrument;
+pub(crate) mod interchange;
 mod midi;
 mod midi_record;
 mod mix;
@@ -159,6 +160,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(surround::specs());
         v.extend(plugin_state::specs());
         v.extend(instrument::specs());
+        v.extend(interchange::specs());
         v.extend(sampler::specs());
         v.extend(video::specs());
         v.extend(zoom_toggle::specs());

@@ -549,6 +549,10 @@ fn names<'a>(p: &'a Value, key: &str) -> Vec<&'a str> {
 fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "file.import_session_data";
     let path = str_param(p, "path").filter(|x| !x.trim().is_empty()).ok_or_else(|| bad(id, "`path` required"))?.to_string();
+    let ext = std::path::Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if matches!(ext.as_str(), "aaf" | "dawproject" | "omf" | "ptx" | "ptf" | "pts") {
+        return super::interchange::import_foreign(e, &path);
+    }
     let text_v = crate::io::read_text(&path)?;
     let other = Session::from_json(&text_v).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
     let names: Option<Vec<String>> =

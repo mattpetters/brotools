@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (G-02: MIDI devices; G-01: duplex clock and record offset) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (G-02: MIDI devices; G-01: duplex clock and record offset; G-03: AAF and DAWproject subset) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -17,7 +17,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** Duplex is two cpal streams on one device (no single callback); mix block stays 512; JACK and on-device verification still open | Hardware | [hardware-parity.md](hardware-parity.md) | 8–15 |
 | G-02 | MIDI devices: no hardware verification on macOS/Windows; no MTC chase, MMC or SysEx | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 8–15 |
-| G-03 | **Alpha blocker.** Cannot exchange sessions with Pro Tools (no AAF/OMF, no `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
+| G-03 | AAF and DAWproject cover a tested subset; OMF and `.ptx` are still closed | File formats | [file-format-parity.md](file-format-parity.md) | 20–40 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 15–25 |
 | G-06 | (Playback streaming: alpha blocker for long sessions) Sources decoded whole into RAM. Recording already streams to disk | Performance | [hardware-parity.md](hardware-parity.md) | 10–20 |
@@ -64,9 +64,9 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 - **Evidence:** code above; Playback Engine window says "Mix block size: 512 samples"; issue #42
   (no input device selection, forced monitoring feedback with virtual routing).
 - **Impact:** blocks tracking with any multichannel interface; latency makes overdubs hard.
-- **Estimate:** ≈ 25–40 h (device enumeration and selection, buffer size, duplex stream with one
-  clock, ASIO feature build, per-channel I/O mapping into I/O Setup, latency reporting and
-  record-offset compensation). Needs hands-on hardware testing.
+- **Estimate:** ≈ 8–15 h (one OS duplex callback, a mix block that follows the device buffer, JACK,
+  and verification on real interfaces). Device choice, buffer size, named I/O paths and record
+  offset are already in.
 
 ### G-02. MIDI devices
 
@@ -88,13 +88,18 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 ### G-03. Session interchange with Pro Tools
 
-- **Missing:** opening or saving `.ptx`/`.ptf`, AAF and OMF import and export (#40), Media
-  Composer–compatible sessions. Our session format is `.scraft` JSON.
-- **Impact:** the standard's main-format bar for beta. A Pro Tools user cannot bring a project in
-  or hand one back; post-production (picture editors deliver AAF) is blocked.
-- **Estimate:** AAF/OMF import + export ≈ 50–90 h (FilmCraft already writes AAF/OMF; we can learn
-  from it but not share code). `.ptx` is proprietary and undocumented: owner decision on whether
-  black-box format study is in the clean-room rules; not included in the estimate.
+- **Done (2026-10-29):** `file.import_aaf` / `file.export_aaf` (File ▸ Import ▸ Session Data…,
+  File ▸ Export ▸ Selected Tracks as New AAF/OMF…). AAF (pure Rust, `cfb`) and DAWproject (MIT zip
+  of XML) round-trip audio tracks, clips with source offsets, fade in/out, clip gain, volume and
+  pan automation, markers, and embedded or linked PCM WAV. The AAF reader started from the
+  unmerged pure-Rust reader in storytold/soundcraft #799 (Vic Herrera) and still imports that
+  pull request's synthetic external-WAV fixture.
+- **Missing:** OMF (the practical C library is LGPL, which this project does not copy). Pro Tools
+  `.ptx`/`.ptf` (`libptformat` is LGPL-2.1-or-later; no complete public specification to implement
+  clean-room). AAF from other editors beyond this subset (nested sequences, plugins, video,
+  elastic audio, multi-channel splits). Our AAF was not opened in Pro Tools in this change.
+- **Estimate:** ≈ 20–40 h for a broader AAF corpus and an OMF subset if a permissive reader
+  appears. `.ptx` stays an owner decision and is not in the estimate.
 
 ### G-04. Correctness bugs in "done" features
 
@@ -250,6 +255,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | G-03 shrunk: AAF and DAWproject subset (tracks, clips, fades, clip gain, volume/pan, markers, PCM). OMF and `.ptx` remain |
 | 2026-10-29 | major | G-02 shrunk: MIDI input and output, live play-through, recording, beat clock and MTC out. Hardware verification on macOS/Windows, chase, MMC and SysEx remain |
 | 2026-10-29 | minor | G-01: same-device duplex clock, named I/O paths, record offset, low-latency monitoring. G-06: record-to-disk was already in tree (#84); playback streaming remains |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |

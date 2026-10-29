@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (MIDI devices; audio I/O duplex clock and record offset) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (MIDI devices and duplex I/O; AAF and DAWproject subset) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -10,7 +10,7 @@ Hours are Opus 5.5 agent-hours.
 
 1. **Merge or close the open bug-fix PRs** (#123–#134, #146, #148, #75) and fix the rest of the
    correctness backlog (G-04). ≈ 15–25 h.
-2. **Audio interface basics** (G-01): device selection, buffer size, duplex stream, ASIO. ≈ 25–40 h.
+2. **Audio interface basics** (G-01): device, rate and buffer choice and record-to-disk are in. Left: one duplex callback, a mix block that follows the device, on-device verification. ≈ 15–25 h.
 3. **MIDI devices** (G-02): input, output, thru, recording, beat clock and MTC out are in. Left: a hardware pass on macOS and Windows, MTC chase, MMC. ≈ 8–15 h.
 4. **macOS plugin hosting** (G-05): library-validation entitlement now (#153), then AU editors. ≈ 15–25 h.
 5. **A PR CI that runs `cargo xtask ci`** on Linux, macOS and Windows (G-14). ≈ 5–10 h.
@@ -28,10 +28,12 @@ main platform). Any **no** keeps SoundCraft **pre-alpha**, and those rows are th
 | Edit: select, trim, fade, comp playlists, Slip/Shuffle/Grid | yes (rough) | Every Edit menu command; property-tested with undo; open bugs #3, #5, #140 don't block the workflow | — |
 | Mix with built-in and third-party plugins, sends, busses, automation | partial (passes on CLAP/AU) | 27 built-in processors; CLAP and AU host on the signed macOS build, but its missing entitlement blocks third-party VST3 (#153). No AU plugin windows yet; VST3 windows on macOS only | 1–2 (entitlement) |
 | Bounce mix and stems; save and reopen the session | yes (rough) | WAV/BWF/AIFF/FLAC bounce, stems, `.scraft` save/reopen with plugin state; bugs #59, #103 in bus bounce and aux latency (PRs open) | — |
-| Exchange a session with Pro Tools or a picture editor | **no** | No `.ptx`, AAF or OMF import or export (#40, G-03) | 50–90 |
+| Exchange a session with Pro Tools or a picture editor | partial | AAF and DAWproject: tracks, clips, offsets, fades, clip gain, volume/pan, markers, embedded or linked WAV. No OMF, no `.ptx` (G-03) | 20–40 |
 
-**Result: pre-alpha.** Audio recording and session exchange still fail; MIDI recording is partial
-until a physical controller is confirmed on macOS. Passing them is ~100–160 h.
+**Result: pre-alpha.** Audio recording still fails (two cpal callbacks, a fixed 512-sample mix
+block, unverified on hardware). MIDI recording is partial until a physical controller is confirmed
+on macOS. Session exchange is partial (AAF and DAWproject; not OMF or `.ptx`). Passing them is
+~45–80 h.
 
 ## Milestones
 
@@ -41,14 +43,14 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 |---|---|---|---:|
 | M0–M4 | Workspace, gates, model, I/O, DSP, mix engine, command engine, Edit/Mix UI, playback, metering, plugins, bounce | ✅ | — |
 | M5 | Editing depth (tools, modes, playlists, fades, comping, clip groups) | ✅ (bugs open, G-04) | in G-04 |
-| M6 | Recording, punch, loop record, monitoring | 🟡 first cut; device choice and record-to-disk missing | 40–60 |
+| M6 | Recording, punch, loop record, monitoring | 🟡 device choice and record-to-disk exist; one duplex callback and a device-sized mix block remain | 15–25 |
 | M7 | MIDI and notation editing | 🟡 | 50–80 |
 | M8 | CLI, control channel, MCP, agent acceptance test | ✅ | 3 |
 | M9 | AudioSuite breadth ✅, Elastic Audio 🟡, Beat Detective 🟡 | 🟡 | 40–60 |
 | M10 | Public releases on all platforms | ✅ v0.3.0 (2026-10-08) and v0.4.0 (2026-10-10) released for every platform | — |
 | M11 | Third-party plugin hosting (CLAP, VST3, AU), video, surround | 🟡 mostly done | 40–60 |
 | M12 | **Hardware**: audio interfaces, MIDI devices, sync, control surfaces | ⬜ | 110–180 |
-| M13 | **Interchange**: AAF/OMF import/export, disk streaming, record to disk | ⬜ | 65–115 |
+| M13 | **Interchange**: AAF/DAWproject subset done; OMF, `.ptx`, disk streaming, record to disk remain | 🟡 | 40–80 |
 | M14 | **Fidelity harness** against Pro Tools (null tests, plugin responses) | ⬜ | 20–30 |
 | M15 | **Localization**: catalog, fonts/RTL, the 8 Pro Tools languages first | ⬜ (PRs #141, #143 open) | 70–110 |
 | M16 | Built-in plugin depth, sidechain, ARA | ⬜ | 110–170 |
@@ -65,7 +67,7 @@ Beta needs ~75 % ready for real work and no blocking gap in session interchange.
 |---|---|---:|
 | Correctness backlog and a PR CI | G-04, G-14 | 40–65 |
 | Audio interfaces, MIDI devices, sync | G-01, G-02, G-11 | 60–100 |
-| AAF/OMF interchange, disk streaming, record to disk | G-03, G-06 | 65–115 |
+| Remaining interchange (OMF, richer AAF, `.ptx` decision), disk streaming, record to disk | G-03, G-06 | 35–65 |
 | Plugin hosting completeness on every OS, sidechain | G-05, G-13 | 35–60 |
 | Fidelity harness and the fixes it finds | G-07 | 40–60 |
 | Built-in plugin essentials (EQ/dynamics/reverb/delay depth) | G-08 (half) | 40–60 |
@@ -89,6 +91,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | Session exchange is partial: AAF and DAWproject subset. OMF and `.ptx` remain (~20–40 h) |
 | 2026-10-29 | major | MIDI devices: input, output, live play-through, recording, beat clock and MTC out. The record-from-a-controller gate row is partial |
 | 2026-10-29 | trivial | Alpha-gate evidence: same-device duplex, record offset and record-to-disk exist; the row stays no until hardware verification and a mix block that follows the device |
 | 2026-10-24 | trivial | 27 built-in processors, as the plugin registry holds; the sampler (#108) is no longer listed under plugin essentials |

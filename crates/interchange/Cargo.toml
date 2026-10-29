@@ -1,0 +1,23 @@
+[package]
+name = "soundcraft-interchange"
+description = "Session interchange: AAF and DAWproject import and export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+soundcraft-model.workspace = true
+soundcraft-time.workspace = true
+soundcraft-audio-io.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+cfb.workspace = true
+uuid.workspace = true
+zip.workspace = true
+quick-xml.workspace = true
+
+[lints]
+workspace = true

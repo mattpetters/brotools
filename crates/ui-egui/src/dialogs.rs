@@ -394,9 +394,20 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
         if replaces {
             v["replace"] = json!(true);
         }
-        return Some((cmd.to_string(), v));
+        return Some((session_data_command(cmd, path), v));
     }
     None
+}
+
+/// Session Data and Selected Tracks as New AAF/OMF choose the interchange command from the path.
+fn session_data_command(cmd: &str, path: &str) -> String {
+    let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    match (cmd, ext.as_str()) {
+        ("file.import_session_data", "aaf") => "file.import_aaf".to_string(),
+        ("file.import_session_data", "dawproject") => "file.import_dawproject".to_string(),
+        ("file.export_aaf", "dawproject") => "file.export_dawproject".to_string(),
+        _ => cmd.to_string(),
+    }
 }
 
 /// The Strip Silence form: the Strip Silence command to run, or the values to carry into Rename.
