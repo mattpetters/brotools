@@ -284,14 +284,22 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     for t in &tracks {
         if let Some(tr) = s.track_mut(*t) {
             // Routing is session-specific: keep the track's own input/output, VCA and arm state.
-            let keep = (tr.mixer.input.clone(), tr.mixer.output.clone(), tr.mixer.vca, tr.mixer.record_arm, tr.mixer.pan.clone());
+            let keep = (
+                tr.mixer.input.clone(),
+                tr.mixer.output.clone(),
+                tr.mixer.midi_output.clone(),
+                tr.mixer.vca,
+                tr.mixer.record_arm,
+                tr.mixer.pan.clone(),
+            );
             tr.mixer = mixer.clone();
             tr.mixer.input = keep.0;
             tr.mixer.output = keep.1;
-            tr.mixer.vca = keep.2;
-            tr.mixer.record_arm = keep.3;
-            if tr.mixer.pan.len() != keep.4.len() {
-                tr.mixer.pan = keep.4;
+            tr.mixer.midi_output = keep.2;
+            tr.mixer.vca = keep.3;
+            tr.mixer.record_arm = keep.4;
+            if tr.mixer.pan.len() != keep.5.len() {
+                tr.mixer.pan = keep.5;
             }
             if tr.kind == TrackKind::Instrument && instrument.is_some() {
                 tr.instrument = instrument.clone();

@@ -1187,3 +1187,46 @@ fn apply_matrix_span_matches_the_plain_per_sample_sum() {
         }
     }
 }
+
+#[test]
+fn a_live_note_sounds_on_an_armed_instrument_while_stopped() {
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Keys"));
+    let tr = s.track_mut(t).unwrap();
+    tr.mixer.record_arm = true;
+    tr.instrument = Some(Insert::new("subtractive_synth"));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.monitor_only = true;
+    eng.midi_in.push(LiveMidi { offset: 0, port: ALL_PORTS, status: 0x90, data1: 60, data2: 110 });
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    let energy: f32 = out[0].iter().map(|x| x.abs()).sum();
+    assert!(energy > 0.01, "armed instrument stayed silent ({energy})");
+    // A different channel is ignored when the track listens to channel 1 only.
+    s.track_mut(t).unwrap().mixer.input = soundcraft_model::MidiEndpoint { device: None, channel: Some(0) }.route();
+    eng.midi_in.clear();
+    eng.midi_in.push(LiveMidi { offset: 0, port: ALL_PORTS, status: 0x91, data1: 72, data2: 110 });
+    let mut quiet = vec![vec![0.0; 512]; 2];
+    eng.monitor_only = true;
+    // The previous note is still held, so compare a fresh engine.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.monitor_only = true;
+    eng.midi_in.push(LiveMidi { offset: 0, port: ALL_PORTS, status: 0x91, data1: 72, data2: 110 });
+    eng.render(&s, 0, 512, &mut quiet);
+    let other: f32 = quiet[0].iter().map(|x| x.abs()).sum();
+    assert!(other < 0.01, "channel 2 reached a channel-1 track ({other})");
+}
+
+#[test]
+fn clip_notes_are_copied_to_the_tracks_midi_output() {
+    let mut s = synth_session(0.0);
+    let t = s.tracks[0].id;
+    s.track_mut(t).unwrap().mixer.midi_output = soundcraft_model::MidiEndpoint { device: Some("Out"), channel: None }.route();
+    let ports = std::sync::Arc::new(MidiPorts::default());
+    assert_eq!(ports.assign("Out"), 0);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.midi_ports = ports;
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    assert!(eng.midi_out.iter().any(|e| e.status & 0xF0 == 0x90 && e.data1 == 60), "no note-on on the MIDI output: {:?}", eng.midi_out);
+}

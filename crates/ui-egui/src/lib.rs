@@ -105,6 +105,9 @@ pub struct UiState {
     pub show_workspace: bool,
     pub show_configurations: bool,
     pub show_playback_engine: bool,
+    /// Setup › MIDI › MIDI Input Devices: ports, thru activity, beat clock and MTC.
+    #[serde(default)]
+    pub show_midi_devices: bool,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
@@ -173,6 +176,7 @@ impl Default for UiState {
             show_workspace: false,
             show_configurations: false,
             show_playback_engine: false,
+            show_midi_devices: false,
             audio: soundcraft_playback::AudioConfig::default(),
             mix_separate: false,
             show_io_setup: false,
@@ -251,6 +255,10 @@ pub struct SoundApp {
     /// When the recent sessions were last checked for existence, which list, and the result.
     recent_checked: Option<(f64, Vec<String>, Vec<bool>)>,
     pub player: Option<Player>,
+    /// MIDI inputs and outputs. Open on macOS, Windows and Linux; empty elsewhere.
+    pub midi_hw: soundcraft_playback::MidiHub,
+    /// The current player has been given the hub's queues.
+    midi_attached: bool,
     /// Input capture, opened on first record.
     pub recorder: Option<soundcraft_playback::record::Recorder>,
     record_start: Samples,

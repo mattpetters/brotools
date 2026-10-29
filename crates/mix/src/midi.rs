@@ -1,4 +1,5 @@
 use super::clips::Key;
+use super::live_midi::OutTap;
 use super::strip::{PluginSlot, Strip};
 use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track};
 use std::sync::Arc;
@@ -18,7 +19,16 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 }
 
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>) {
+/// `hardware` receives the same messages for an external MIDI port, when the track has one.
+pub(crate) fn schedule_notes(
+    s: &Session,
+    t: &Track,
+    pos: Samples,
+    frames: usize,
+    mut inst: Option<&mut PluginSlot>,
+    held: &mut Vec<u8>,
+    hardware: &mut OutTap<'_>,
+) {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -58,14 +68,22 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
                 continue;
             }
             if on >= pos && on < end {
-                inst.plugin.note_on(usize::try_from(on - pos).unwrap_or(0), n.pitch, n.velocity);
-                if !held.contains(&n.pitch) && held.len() < 128 {
-                    held.push(n.pitch);
+                let at = usize::try_from(on - pos).unwrap_or(0);
+                if let Some(inst) = inst.as_mut() {
+                    inst.plugin.note_on(at, n.pitch, n.velocity);
+                    if !held.contains(&n.pitch) && held.len() < 128 {
+                        held.push(n.pitch);
+                    }
                 }
+                hardware.push(at as u32, 0x90 | (n.channel & 0x0F), n.pitch, n.velocity);
             }
             if off >= pos && off < end {
-                inst.plugin.note_off(usize::try_from(off - pos).unwrap_or(0), n.pitch);
-                held.retain(|p| *p != n.pitch);
+                let at = usize::try_from(off - pos).unwrap_or(0);
+                if let Some(inst) = inst.as_mut() {
+                    inst.plugin.note_off(at, n.pitch);
+                    held.retain(|p| *p != n.pitch);
+                }
+                hardware.push(at as u32, 0x80 | (n.channel & 0x0F), n.pitch, n.release_velocity.min(127));
             }
         }
         let near = s.tempo.samples_to_ticks(pos, sr).saturating_sub(base).saturating_sub(1)
@@ -78,25 +96,36 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
             }
             let at = s.tempo.tick_to_samples(base.saturating_add(tick), sr);
             if at >= pos && at < end && at < clip.end() {
-                inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(c.kind, c.value, dp));
+                let sample = usize::try_from(at - pos).unwrap_or(0);
+                if let Some(inst) = inst.as_mut() {
+                    inst.plugin.midi(sample, ctrl_message(c.kind, c.value, dp));
+                }
+                let msg = ctrl_message_on(c.kind, c.value, dp, c.channel);
+                hardware.push(sample as u32, msg[0], msg[1], msg[2]);
             }
         }
     }
 }
 
-/// A controller event as a MIDI 1.0 message on channel 1 (where the notes go), with `transpose`
-/// applied to a poly-pressure key.
+/// A controller event as a MIDI 1.0 message on channel 1 (where the instrument's notes go), with
+/// `transpose` applied to a poly-pressure key.
 fn ctrl_message(kind: CtrlKind, value: i32, transpose: i64) -> [u8; 3] {
+    ctrl_message_on(kind, value, transpose, 0)
+}
+
+/// [`ctrl_message`] on MIDI channel `channel` (0..=15). Hardware outputs keep the event's channel.
+fn ctrl_message_on(kind: CtrlKind, value: i32, transpose: i64, channel: u8) -> [u8; 3] {
+    let ch = channel & 0x0F;
     let v7 = value.clamp(0, 127) as u8;
     match kind {
-        CtrlKind::Cc(n) => [0xB0, n & 0x7F, v7],
+        CtrlKind::Cc(n) => [0xB0 | ch, n & 0x7F, v7],
         CtrlKind::PitchBend => {
             let v = value.saturating_add(8192).clamp(0, 16383);
-            [0xE0, (v & 0x7F) as u8, (v >> 7) as u8]
+            [0xE0 | ch, (v & 0x7F) as u8, (v >> 7) as u8]
         }
-        CtrlKind::ChannelPressure => [0xD0, v7, 0],
-        CtrlKind::PolyPressure(k) => [0xA0, (i64::from(k) + transpose).clamp(0, 127) as u8, v7],
-        CtrlKind::Program => [0xC0, v7, 0],
+        CtrlKind::ChannelPressure => [0xD0 | ch, v7, 0],
+        CtrlKind::PolyPressure(k) => [0xA0 | ch, (i64::from(k) + transpose).clamp(0, 127) as u8, v7],
+        CtrlKind::Program => [0xC0 | ch, v7, 0],
     }
 }
 

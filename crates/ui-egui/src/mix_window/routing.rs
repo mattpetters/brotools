@@ -1,5 +1,6 @@
 use super::plugin_menu::{MenuSearch, menu_row};
 use super::{Route, SoundApp, Track, TrackId, Ui, json};
+use soundcraft_model::MidiEndpoint;
 
 pub(crate) fn route_name(app: &SoundApp, r: &Route) -> String {
     match r {
@@ -11,7 +12,17 @@ pub(crate) fn route_name(app: &SoundApp, r: &Route) -> String {
 }
 
 pub(crate) fn input_name(app: &SoundApp, track: &Track) -> String {
-    if track.kind.has_playlist() && track.mixer.input == Route::None { "In 1".to_string() } else { route_name(app, &track.mixer.input) }
+    if track.kind.is_midi() {
+        MidiEndpoint::of(&track.mixer.input).label()
+    } else if track.kind.has_playlist() && track.mixer.input == Route::None {
+        "In 1".to_string()
+    } else {
+        route_name(app, &track.mixer.input)
+    }
+}
+
+pub(crate) fn midi_output_name(track: &Track) -> String {
+    MidiEndpoint::of(&track.mixer.midi_output).output_label()
 }
 
 /// The input or output menu under `resp`. It closes only on a click outside, so its bus search
@@ -22,6 +33,15 @@ pub(crate) fn route_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId
 
 /// Input or output menu: no route and buses on both, plus the main output (outputs) or inputs 1-8 (inputs).
 fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
+    let midi = app.engine.session().track(id).is_some_and(|t| t.kind.is_midi());
+    if midi && input {
+        midi_input_menu(app, ui, id);
+        return;
+    }
+    if midi && !input {
+        midi_output_menu(app, ui, id);
+        ui.separator();
+    }
     let key = if input { "input" } else { "output" };
     let cmd = if input { "track.input" } else { "track.output" };
     if ui.button(if input { "no input" } else { "no output" }).clicked() {
@@ -57,5 +77,56 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
         }
         let _ = app.run(cmd, json!({"track": id.0, key: format!("Bus {n}")}));
         ui.close();
+    }
+}
+
+fn midi_input_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
+    if ui.button("All").clicked() {
+        let _ = app.run("track.input", json!({"track": id.0, "input": "all"}));
+        ui.close();
+    }
+    let names: Vec<String> = app.midi_hw.inputs().iter().filter(|p| p.enabled).map(|p| p.name.clone()).collect();
+    if names.is_empty() {
+        ui.weak("No MIDI inputs — Setup › MIDI › MIDI Input Devices");
+        return;
+    }
+    for name in names {
+        let name2 = name.clone();
+        ui.menu_button(&name, |ui| {
+            if ui.button("All channels").clicked() {
+                let _ = app.run("track.input", json!({"track": id.0, "input": format!("MIDI:*:{name2}")}));
+                ui.close();
+            }
+            for ch in 1..=16 {
+                if ui.button(format!("Channel {ch}")).clicked() {
+                    let _ = app.run("track.input", json!({"track": id.0, "input": format!("MIDI:{ch}:{name2}")}));
+                    ui.close();
+                }
+            }
+        });
+    }
+}
+
+fn midi_output_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
+    ui.strong("MIDI output");
+    if ui.button("no MIDI output").clicked() {
+        let _ = app.run("track.midi_output", json!({"track": id.0, "output": "none"}));
+        ui.close();
+    }
+    let names: Vec<String> = app.midi_hw.outputs().iter().filter(|p| p.enabled).map(|p| p.name.clone()).collect();
+    for name in names {
+        let name2 = name.clone();
+        ui.menu_button(&name, |ui| {
+            if ui.button("All channels").clicked() {
+                let _ = app.run("track.midi_output", json!({"track": id.0, "output": format!("MIDI:*:{name2}")}));
+                ui.close();
+            }
+            for ch in 1..=16 {
+                if ui.button(format!("Channel {ch}")).clicked() {
+                    let _ = app.run("track.midi_output", json!({"track": id.0, "output": format!("MIDI:{ch}:{name2}")}));
+                    ui.close();
+                }
+            }
+        });
     }
 }

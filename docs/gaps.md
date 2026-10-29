@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-10-25 · **Change:** trivial (G-04: Clip Looping crossfade and loop count; previously trivial: G-08 and G-20: built-in plugin count, the sampler shipped) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (G-02: MIDI input and output devices, live play-through, recording, beat clock and MTC out) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -16,7 +16,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
-| G-02 | **Alpha blocker.** No MIDI device input or output | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 20–35 |
+| G-02 | MIDI devices: no hardware verification on macOS/Windows; no MTC chase, MMC or SysEx | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 8–15 |
 | G-03 | **Alpha blocker.** Cannot exchange sessions with Pro Tools (no AAF/OMF, no `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 15–25 |
@@ -60,13 +60,21 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 ### G-02. MIDI devices
 
-- **Missing:** all MIDI hardware I/O. No `midir`/CoreMIDI/WinMM/ALSA sequencer code exists;
-  `setup.midi_input_devices` and `setup.midi_studio` only store names. You cannot record from a
-  keyboard, play a hosted instrument live, drive external synths, or send MIDI clock/MTC.
-  `midi_editor.rs:288` notes audition "needs a live MIDI input path".
-- **Impact:** MIDI production is limited to drawing notes and importing SMF.
-- **Estimate:** ≈ 20–35 h (device layer, realtime input to armed tracks and instruments with
-  timestamps, MIDI record/merge/loop, thru, output tracks, clock out).
+- **Done (2026-10-29):** MIDI input and output on macOS (CoreMIDI), Windows (WinMM) and Linux
+  (ALSA sequencer), via `midir`. Ports are listed in Setup › MIDI › MIDI Input Devices, enabled
+  per session (an empty allow-list means every port), and hot-plugged about once a second. A
+  record-enabled or input-monitored MIDI/instrument track plays the input on its instrument
+  (sample offset inside the block, sustain pedal, channel and port filter on the track input).
+  Options › MIDI Thru plays the selected track when nothing is armed. Recording (`midi.record_take`)
+  writes notes and controllers, with punch, loop passes, MIDI Merge and input quantize. Each track
+  chooses a hardware MIDI output; clip playback and thru are sent there. MIDI Beat Clock (with
+  Start/Continue/Stop) and quarter-frame MTC go out while playing, at 24/25/29.97/30.
+- **Missing:** a physical keyboard has not been checked on macOS or Windows (Linux ALSA is the
+  backend this was built against). No MTC/LTC *chase*, no MIDI Machine Control, no SysEx record,
+  no FreeBSD or web MIDI. The on-screen MIDI keyboard (#580) still does not record.
+- **Impact:** a controller can be recorded and can play instruments and external synths. Chase,
+  MMC and a verified macOS/Windows pass remain.
+- **Estimate:** ≈ 8–15 h for chase, MMC and a hardware pass on macOS and Windows.
 
 ### G-03. Session interchange with Pro Tools
 
@@ -159,8 +167,8 @@ switch. ≈ 40–70 h for HUI/MCU plus a mapping layer; hardware needed to verif
 
 ### G-11. Sync
 
-No MTC/LTC chase or generation, no MIDI Beat Clock (`setup.midi_beat_clock` stores a flag only),
-no video reference or word clock awareness, no Satellite-style linking. ≈ 15–25 h after G-01/G-02.
+MIDI Beat Clock and quarter-frame MTC are generated while playing (G-02). No MTC/LTC *chase*, no
+video reference or word clock awareness, no Satellite-style linking. ≈ 10–18 h.
 
 ### G-12. Immersive delivery
 
@@ -225,6 +233,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | major | G-02 shrunk: MIDI input and output, live play-through, recording, beat clock and MTC out. Hardware verification on macOS/Windows, chase, MMC and SysEx remain |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |
 | 2026-10-19 | trivial | G-04: Float32 encoding retains finite headroom (#791); integer clipping and non-finite handling retained |
