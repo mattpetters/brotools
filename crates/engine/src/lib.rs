@@ -14,6 +14,7 @@ pub mod demo;
 pub mod edit;
 pub mod file_access;
 pub mod inspect;
+pub(crate) mod interchange;
 pub mod io;
 pub mod score;
 

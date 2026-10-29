@@ -737,6 +737,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfb"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f13298d9178622b7916ec5d01d470425c04273c8ed07e87b1c38b34c4f4612b"
+dependencies = [
+ "fnv",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3590,6 +3601,15 @@ checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "quick-xml"
+version = "0.37.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
@@ -4390,6 +4410,7 @@ dependencies = [
  "soundcraft-audio-io",
  "soundcraft-clap-host",
  "soundcraft-dsp",
+ "soundcraft-interchange",
  "soundcraft-midi",
  "soundcraft-mix",
  "soundcraft-model",
@@ -4397,6 +4418,22 @@ dependencies = [
  "soundcraft-video",
  "soundcraft-vst3-host",
  "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
+name = "soundcraft-interchange"
+version = "0.14.0"
+dependencies = [
+ "cfb",
+ "quick-xml 0.37.5",
+ "serde",
+ "serde_json",
+ "soundcraft-audio-io",
+ "soundcraft-model",
+ "soundcraft-time",
+ "thiserror 2.0.21",
+ "uuid",
  "zip",
 ]
 

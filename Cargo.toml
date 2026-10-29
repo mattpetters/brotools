@@ -26,6 +26,7 @@ soundcraft-engine = { path = "crates/engine" }
 soundcraft-playback = { path = "crates/playback" }
 soundcraft-automation = { path = "crates/automation" }
 soundcraft-ui-egui = { path = "crates/ui-egui" }
+soundcraft-interchange = { path = "crates/interchange" }
 
 # foundation
 thiserror = "2"
@@ -47,6 +48,12 @@ symphonia = { version = "0.6", default-features = false, features = ["mp1", "mp2
 rustfft = "6"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
+# AAF is a Compound File Binary. MIT, pure Rust.
+cfb = "0.15"
+# Class and definition identifiers in AAF structured storage.
+uuid = { version = "1", features = ["std"] }
+# DAWproject is XML inside a zip. MIT OR Apache-2.0.
+quick-xml = "0.37"
 cpal = "0.18"
 
 # Which file paths stored in a session may be opened.

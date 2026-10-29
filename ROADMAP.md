@@ -1,8 +1,8 @@
 # SoundCraft roadmap
 
-**Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
+**Stage: pre-alpha** · next: alpha, ~5% and ~55–90 h away (interface recording and MIDI devices; interchange is partial)
 
-> **Last reviewed:** 2026-10-24 · **Last updated:** 2026-10-25 · **Change:** trivial (side panels in dock columns, Auto Pan stereo balance, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (AAF and DAWproject session interchange) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -15,12 +15,12 @@ menu checklist).
 
 | Number | Value | Kind |
 |---|---|---|
-| Menu breadth | **482 / 512 Pro Tools menu leaves (94.1 %)**; engine alone 397 / 512 | measured (`cargo xtask parity` + UI-layer aliases) |
+| Menu breadth | **482 / 512 Pro Tools menu leaves (94.1 %)**; engine alone 398 / 512 | measured (`cargo xtask parity` + UI-layer aliases). Engine count includes Session Data and Selected Tracks as New AAF/OMF |
 | Feature breadth | **~70 %** | estimated (menus plus plugins, hardware, formats, immersive, cloud) |
 | **Ready for real work** | **~40 %** | estimated, weighted by dimension |
 | Mainstream practitioner (tracking/mixing engineer) | **~36 %** | estimated: 50.6 % weekly-area depth × 0.90 interaction × 0.92 stability × 0.85 file exchange ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
 | Essentials user (song or podcast, defaults) | **~57 %** | estimated: 72.4 % core-feature depth × 0.90 launch/stability × 0.90 discoverability × 0.97 files ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
-| Remaining to alpha | **~110–180 Opus 5.5 agent-hours** (the failing gate rows) | estimated, calibrated on PR history |
+| Remaining to alpha | **~55–90 Opus 5.5 agent-hours** (interface recording and MIDI devices; AAF/DAWproject interchange is in) | estimated, calibrated on PR history |
 | Remaining to beta | **~350–570 Opus 5.5 agent-hours** (includes the alpha work; ~60–70 % parallelizable) | estimated |
 | Remaining to full parity | **~950–1,450 Opus 5.5 agent-hours** | estimated |
 
@@ -37,7 +37,9 @@ Detail: [target-app-parity.md](docs/target-app-parity.md#readiness-by-audience).
 Editing, mixing, bouncing, and saving and reopening work end to end. But a Pro Tools user can't
 record from a chosen audio interface at a chosen buffer size (only the default devices, a fixed
 512-sample block, and takes held in RAM). They can't record MIDI from a keyboard (there is no
-MIDI device layer). And they can't bring a session in or hand one back (no AAF/OMF/`.ptx`).
+MIDI device layer). Session interchange is a tested AAF and DAWproject subset (tracks, clips,
+offsets, fades, clip gain, volume/pan, markers, embedded or linked WAV). OMF and `.ptx` are still
+closed, so a native Pro Tools session still cannot be opened.
 Readiness (~40 %) sits right at the alpha bar, but a gate failure keeps the app pre-alpha. The
 2026-10-07 estimate ("~65 % overall, 110–150 h to 100 %") counted feature presence. This one
 measures readiness and adds hardware, localization and field bug reports.
@@ -48,7 +50,7 @@ measures readiness and adds hardware, localization and field bug reports.
 |---|---:|---:|---|
 | Features | ~45 % | 520–810 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
 | UI/UX fidelity | ~55 % | 60–100 | [ui-parity.md](docs/ui-parity.md) |
-| File formats | ~40 % | 70–120 | [file-format-parity.md](docs/file-format-parity.md) |
+| File formats | ~50 % | 45–80 | [file-format-parity.md](docs/file-format-parity.md) |
 | Hardware (interfaces, MIDI, surfaces, sync) | ~12 % | 110–180 | [hardware-parity.md](docs/hardware-parity.md) |
 | Localization | ~12 % (1 of Pro Tools' 8 languages) | 70–110 | [localization-parity.md](docs/localization-parity.md) |
 | Performance | ~35 % (unmeasured) | 40–70 | [hardware-parity.md](docs/hardware-parity.md#performance) |
@@ -104,7 +106,7 @@ Ranked; the alpha gate, the alpha checklist and the beta plan are in [docs/roadm
 
 1. **Alpha blocker:** audio interfaces: device and buffer-size choice, duplex stream, ASIO; record to disk (G-01, G-06). 35–55 h.
 2. **Alpha blocker:** MIDI devices: record from keyboards, play instruments live, output (G-02). 20–35 h.
-3. **Alpha blocker:** AAF/OMF import and export (G-03). 50–90 h.
+3. Broader session interchange: OMF, more AAF from other editors, and a decision on `.ptx` (G-03). 20–40 h.
 4. macOS plugin entitlement (#153), then AU editors (G-05). 1 h for the entitlement (needed for the mix row), then 15–25 h.
 5. Land the open bug-fix PRs and clear the correctness backlog (G-04). 15–25 h.
 6. PR CI running `cargo xtask ci` on three OSes (G-14). 5–10 h.
@@ -122,6 +124,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
+- **2026-10-29:** File ▸ Import ▸ Session Data… and File ▸ Export ▸ Selected Tracks as New AAF/OMF… read and write an AAF and DAWproject subset: audio tracks, clips with source offsets, fade in/out, clip gain, volume and pan automation, markers, and embedded or linked PCM WAV. Round-trip tests cover both containers, and the synthetic external-WAV AAF from upstream pull request 799 still imports. OMF and Pro Tools `.ptx` stay unsupported (LGPL readers are not copied). File formats ~40 % → ~50 %. Overall readiness stays ~40 % because interface recording and MIDI devices still fail the alpha gate.
 - **2026-10-25:** Tracks and Groups and the Clip List sit in dock columns that run the Edit window's full height at its left and right edges, with the MIDI Editor under the session view between them; Mix docks Tracks and Groups at its left edge. A panel dragged onto a dock group joins it as a tab, stacks above or below it, or makes a new column; one dragged to an empty window edge makes a dock there. A list with no saved place reopens in its dock, and makes the dock again when it is gone. Preferences and window configurations saved with the earlier split-frame layouts load with the new default layouts and keep their other settings. No readiness percentage change.
 - **2026-10-25:** Auto Pan moves the balance of a stereo track: the left channel's level falls as the position moves right and the right channel's as it moves left, at constant power, and each channel stays on its own side. At the center the track passes unchanged, so a wide or out-of-phase stereo image keeps its width, and the envelope follower follows the louder channel. No readiness percentage change.
 - **2026-10-24:** Clip List › Auto Rename (`clip.auto_rename`) sets the names that editing gives the clips it separates from the selected clips: a name, a starting number, a number of places (zeros before the number) and a suffix. The piece after each cut takes the next name, the piece before it keeps its name, and all the pieces count up one number sequence. Pieces that Strip Silence names with its own Rename fields, or removes, take no Auto Rename name. Copied clips keep their scheme when they are pasted, saved sessions hold the schemes, and Import Session Data brings them along. No readiness percentage change.
