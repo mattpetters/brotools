@@ -1,6 +1,6 @@
 # Target-app parity: SoundCraft vs Avid Pro Tools
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** trivial (built-in plugin counts; the sampler shipped; previously minor: hours to ~95 % for each audience; full number confirmed as an additive weighted sum) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (file formats ~50 % after the AAF/DAWproject subset; headline readiness unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
 
 The authoritative assessment of how close SoundCraft is to Pro Tools. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimension docs go deeper:
@@ -81,7 +81,7 @@ post-production, tracking) can switch. "Ready" is depth, correctness and fidelit
 |---|---:|---:|---|---:|---|---|
 | Features | 45 % | **~45 %** | estimated | 520–810 | [area table](#feature-areas) | Menu breadth 94 % measured, but depth is thin: see the area table |
 | UI/UX fidelity | 10 % | **~55 %** | estimated | 60–100 | [ui-parity.md](ui-parity.md) | Edit/Mix windows, every menu, floating windows; open UX bugs #3 #5 #6 #7 #140 #144; shortcuts only recently right on Windows/Linux (#15, #41); generic plugin UIs |
-| File formats | 10 % | **~40 %** | estimated | 70–120 | [file-format-parity.md](file-format-parity.md) | WAV/BWF/RF64/AIFF/FLAC read+write, compressed formats read; no `.ptx`, AAF, OMF, ADM BWF, MP3/AAC export, video export |
+| File formats | 10 % | **~50 %** | estimated | 45–80 | [file-format-parity.md](file-format-parity.md) | WAV/BWF/RF64/AIFF/FLAC read+write, compressed formats read; AAF and DAWproject subset; no `.ptx`, OMF, ADM BWF, MP3/AAC export, video export |
 | Hardware | 10 % | **~12 %** | estimated | 110–180 | [hardware-parity.md](hardware-parity.md) | Default output and default input device only, fixed 512-sample block, no ASIO, no MIDI devices, no control surfaces, no sync |
 | Stability | 10 % | **~45 %** | estimated | 50–80 | [gaps.md](gaps.md) | Never-crash rules and proptests (random edits, mutated sessions, hostile params); but ~25 open correctness bugs, a launch failure (#142), an X11 llvmpipe failure (#107) |
 | Performance | 5 % | **~35 %** | estimated (unmeasured) | 40–70 | [hardware-parity.md](hardware-parity.md) | Parallel strip rendering and PDC exist; whole files decoded into RAM, recording into RAM (#84 open), no track-count or latency benchmarks |
@@ -188,7 +188,7 @@ Weights by what Pro Tools users actually spend time on. **Breadth** = the featur
 | Elastic Audio, TCE, Beat Detective, pitch | 5 % | 70 % | **35 %** | 40–60 | Pitch-preserving warp on Elastic tracks, TCE, conform to tempo, Beat Detective and Identify Beat, audio-to-MIDI. Missing: per-algorithm choice (polyphonic/rhythmic/monophonic/varispeed/X-Form), warp markers UI depth, Elastic Pitch, quality vs Pro Tools unmeasured |
 | Surround and immersive | 5 % | 55 % | **35 %** | 50–80 | Formats stereo → 9.1.6 and Ambisonics, surround panner, fold-down, multichannel bounce, object/bed routing. Missing: Dolby Atmos renderer integration and ADM BWF, MPEG-H (new in 2026.4), binaural/headphone monitoring, surround automation; bug #89 |
 | Video and post | 5 % | 60 % | **40 %** | 40–60 | Video track, H.264/ProRes/MJPEG decoders, sync offset, relinking, timecode rulers. Missing: HEVC/DNx/AV1, video bounce/export, timecode sync to external machines, speech-to-text transcript, field-recorder/iXML conform |
-| Session, file management, interchange | 10 % | 55 % | **35 %** | 60–100 | `.scraft` + Audio Files, Save Copy In, Import Session Data, clip groups, session text export, audio-health report. Missing: `.ptx` read/write, AAF/OMF (#40), session templates, track presets, workspace/Soundbase browser, disk streaming of long sources, batch rename; bugs #86, #91, #136 |
+| Session, file management, interchange | 10 % | 55 % | **45 %** | 40–70 | `.scraft` + Audio Files, Save Copy In, Import Session Data, AAF and DAWproject subset (clips, fades, clip gain, volume/pan, markers, embedded or linked WAV), clip groups, session text export, audio-health report. Missing: `.ptx`, OMF, session templates, track presets, workspace/Soundbase browser, disk streaming of long sources, batch rename; bugs #86, #91, #136 |
 | Collaboration, cloud, Sketch, Splice | 2 % | 0 % | **0 %** | not estimated | Avid services; out of scope unless the owner decides otherwise |
 | Agent control (CLI, control channel, MCP) | 1 % | 100 % | **100 %** | 3 | Ahead of Pro Tools' scripting SDK; one open bug (#145) |
 | **Weighted** | 100 % | **~70 %** | **~45 %** | **~520–810** | |
@@ -203,7 +203,7 @@ platform:
   used, the mix runs in fixed 512-sample blocks, input and output are separate streams, and
   takes are held in RAM.
 - MIDI recording: **no**. There is no MIDI device layer.
-- Session interchange with Pro Tools or picture editors: **no**. No AAF/OMF/`.ptx`.
+- Session interchange with Pro Tools or picture editors: **partial**. AAF and DAWproject cover tracks, clips, offsets, fades, clip gain, volume/pan, markers and PCM media. OMF and `.ptx` do not.
 
 Editing, mixing with plugins, bouncing, and saving and reopening pass (with known bugs).
 

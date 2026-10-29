@@ -51,6 +51,43 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     std::fs::read(path).map_err(err)
 }
 
+/// [`read_file`] limited to `limit` bytes. A larger file is refused before it is read.
+pub(crate) fn read_capped(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    crate::file_access::check_read(path).map_err(EngineError::Io)?;
+    let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
+    let meta = std::fs::metadata(path).map_err(err)?;
+    if !meta.is_file() || meta.len() > limit {
+        return Err(EngineError::Io(format!("{}: not a regular file or it exceeds the import limit", path.display())));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| {
+            use std::io::Read;
+            f.take(limit.saturating_add(1)).read_to_end(&mut bytes)
+        })
+        .map_err(err)?;
+    if bytes.len() as u64 > limit {
+        return Err(EngineError::Io(format!("{}: exceeds the import limit", path.display())));
+    }
+    Ok(bytes)
+}
+
+/// Open a regular file for reading, inside the automation read root when one is set.
+pub(crate) fn open_read(path: &Path) -> Result<std::fs::File> {
+    crate::file_access::check_read(path).map_err(EngineError::Io)?;
+    let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
+    let meta = std::fs::metadata(path).map_err(err)?;
+    if !meta.is_file() {
+        return Err(EngineError::Io(format!("{}: not a regular file", path.display())));
+    }
+    std::fs::File::open(path).map_err(err)
+}
+
+/// Canonical path when the file exists; otherwise `path` itself.
+pub(crate) fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// [`read_file`] as UTF-8 text.
 pub fn read_text(path: impl AsRef<Path>) -> Result<String> {
     let path = path.as_ref();

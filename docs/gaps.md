@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-10-25 · **Change:** trivial (G-04: Clip Looping crossfade and loop count; previously trivial: G-08 and G-20: built-in plugin count, the sampler shipped) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (G-03: AAF and DAWproject subset; OMF and `.ptx` remain) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -17,7 +17,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
 | G-02 | **Alpha blocker.** No MIDI device input or output | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 20–35 |
-| G-03 | **Alpha blocker.** Cannot exchange sessions with Pro Tools (no AAF/OMF, no `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
+| G-03 | AAF and DAWproject cover a tested subset; OMF and `.ptx` are still closed | File formats | [file-format-parity.md](file-format-parity.md) | 20–40 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 15–25 |
 | G-06 | (Record-to-disk part: alpha blocker for the tracking row) Sources decoded whole into RAM; recording into RAM | Performance | [hardware-parity.md](hardware-parity.md) | 15–25 |
@@ -70,13 +70,18 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 ### G-03. Session interchange with Pro Tools
 
-- **Missing:** opening or saving `.ptx`/`.ptf`, AAF and OMF import and export (#40), Media
-  Composer–compatible sessions. Our session format is `.scraft` JSON.
-- **Impact:** the standard's main-format bar for beta. A Pro Tools user cannot bring a project in
-  or hand one back; post-production (picture editors deliver AAF) is blocked.
-- **Estimate:** AAF/OMF import + export ≈ 50–90 h (FilmCraft already writes AAF/OMF; we can learn
-  from it but not share code). `.ptx` is proprietary and undocumented: owner decision on whether
-  black-box format study is in the clean-room rules; not included in the estimate.
+- **Done (2026-10-29):** `file.import_aaf` / `file.export_aaf` (File ▸ Import ▸ Session Data…,
+  File ▸ Export ▸ Selected Tracks as New AAF/OMF…). AAF (pure Rust, `cfb`) and DAWproject (MIT zip
+  of XML) round-trip audio tracks, clips with source offsets, fade in/out, clip gain, volume and
+  pan automation, markers, and embedded or linked PCM WAV. The AAF reader started from the
+  unmerged pure-Rust reader in storytold/soundcraft #799 (Vic Herrera) and still imports that
+  pull request's synthetic external-WAV fixture.
+- **Missing:** OMF (the practical C library is LGPL, which this project does not copy). Pro Tools
+  `.ptx`/`.ptf` (`libptformat` is LGPL-2.1-or-later; no complete public specification to implement
+  clean-room). AAF from other editors beyond this subset (nested sequences, plugins, video,
+  elastic audio, multi-channel splits). Our AAF was not opened in Pro Tools in this change.
+- **Estimate:** ≈ 20–40 h for a broader AAF corpus and an OMF subset if a permissive reader
+  appears. `.ptx` stays an owner decision and is not in the estimate.
 
 ### G-04. Correctness bugs in "done" features
 
