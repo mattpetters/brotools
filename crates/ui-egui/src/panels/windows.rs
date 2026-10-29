@@ -627,10 +627,36 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     Ok(out)
 }
 
-/// Setup › I/O: busses and output paths.
+fn channel_list(channels: &[u16]) -> String {
+    if channels.is_empty() {
+        return "—".into();
+    }
+    channels.iter().map(|c| c.saturating_add(1).to_string()).collect::<Vec<_>>().join(", ")
+}
+
+/// Setup › I/O: named inputs, outputs and busses, and the record-offset compensation.
 pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_io_setup;
-    win(ctx, &mut open, "I/O Setup", vec2(420.0, 300.0), |ui| {
+    win(ctx, &mut open, "I/O Setup", vec2(460.0, 420.0), |ui| {
+        ui.label(egui::RichText::new("Inputs").strong());
+        let inputs: Vec<(String, String, String, bool)> = app
+            .engine
+            .session()
+            .inputs
+            .iter()
+            .map(|p| (p.name.clone(), p.format.label().to_string(), channel_list(&p.resolved_channels()), p.active))
+            .collect();
+        if inputs.is_empty() {
+            ui.label("No input paths yet. New sessions start with In 1-2.");
+        }
+        for (name, fmt, channels, active) in inputs {
+            ui.label(format!("{name} — {fmt} — ch {channels}{}", if active { "" } else { " (inactive)" }));
+        }
+        if ui.button("New Input").clicked() {
+            let n = app.engine.session().inputs.len() + 1;
+            let _ = app.run("setup.io", json!({"action": "create_input", "name": format!("In {n}"), "format": "mono"}));
+        }
+        ui.separator();
         ui.label(egui::RichText::new("Busses").strong());
         let busses: Vec<(String, String)> = app.engine.session().busses.iter().map(|b| (b.name.clone(), b.format.label().to_string())).collect();
         egui::Grid::new("busses").num_columns(3).striped(true).show(ui, |ui| {
@@ -670,7 +696,18 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(egui::RichText::new(format!("{} ch", main.channels())).small());
         });
         for o in app.engine.session().outputs.clone() {
-            ui.label(format!("{} — {} from channel {}", o.name, o.format.label(), o.first_channel + 1));
+            let channels = channel_list(&o.resolved_channels());
+            ui.label(format!("{} — {} — ch {channels}{}", o.name, o.format.label(), if o.active { "" } else { " (inactive)" }));
+        }
+        ui.separator();
+        ui.label(egui::RichText::new("Record offset").strong());
+        ui.label("Shifts a take earlier by the input and output latency, plus this user offset.");
+        let mut samples = app.engine.session().edit.value("engine.record_offset", 0.0).round().clamp(-2_000_000.0, 2_000_000.0) as i32;
+        let mut compensate = app.engine.session().edit.value("engine.record_compensate", 1.0) >= 0.5;
+        let drag = ui.add(egui::DragValue::new(&mut samples).range(-2_000_000..=2_000_000).suffix(" samples")).changed();
+        let check = ui.checkbox(&mut compensate, "Compensate input and output latency").changed();
+        if drag || check {
+            let _ = app.run("setup.record_offset", json!({"samples": samples, "compensate": compensate}));
         }
     });
     app.ui.show_io_setup = open;

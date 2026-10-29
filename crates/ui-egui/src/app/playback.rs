@@ -145,10 +145,25 @@ impl SoundApp {
     /// autosave that plan with the session.
     fn plan_recording(&mut self, takes: Vec<soundcraft_engine::io::Take>, pass: Option<Samples>) {
         let rate = self.recorder.as_ref().map_or(0, |r| r.sample_rate);
-        self.take_plan = Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, rate, takes });
+        let offset = self.record_compensation();
+        self.take_plan = Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, rate, offset, takes });
         if let Some(root) = self.autosave_dir.clone() {
             self.queue_autosave(root);
         }
+    }
+
+    /// Samples to shift a take earlier: the driver's input and output latency, or two buffers when
+    /// the driver has not reported any, plus the user offset from `setup.record_offset`.
+    fn record_compensation(&self) -> i64 {
+        let user_v = self.engine.session().edit.value("engine.record_offset", 0.0);
+        let user = if user_v.is_finite() { user_v.round().clamp(-2_000_000.0, 2_000_000.0) as i64 } else { 0 };
+        let compensate = self.engine.session().edit.value("engine.record_compensate", 1.0) >= 0.5;
+        let (input_latency, output_latency, buffer) = match (&self.recorder, &self.player) {
+            (Some(rec), Some(play)) => (rec.input_latency_frames(), play.output_latency_frames(), play.device_buffer.unwrap_or(0)),
+            (None, Some(play)) => (0, play.output_latency_frames(), play.device_buffer.unwrap_or(0)),
+            _ => (0, 0, self.ui.audio.buffer_size.unwrap_or(0)),
+        };
+        soundcraft_playback::record_offset_samples(input_latency, output_latency, buffer, user, compensate)
     }
 
     /// Arm the input for the record-enabled tracks; a session never saved records into its
@@ -185,18 +200,24 @@ impl SoundApp {
         let Some(r) = &mut self.recorder else { return };
         let (takes, problem) = r.finish();
         let tracks = takes.len().max(1);
-        let plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
+        let mut plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
             start: self.record_start,
             pass: None,
             punch: self.punch,
             rate: 0,
+            offset: 0,
             takes: Vec::new(),
         });
+        plan.offset = self.record_compensation();
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
-        self.ui.status =
-            if plan.pass.is_some() { format!("Loop-recorded {} take(s)", ids.len() / tracks) } else { format!("Recorded {} clip(s)", ids.len()) };
+        let shift = if plan.offset == 0 { String::new() } else { format!(", shifted {} samples for delay compensation", plan.offset) };
+        self.ui.status = if plan.pass.is_some() {
+            format!("Loop-recorded {} take(s){shift}", ids.len() / tracks)
+        } else {
+            format!("Recorded {} clip(s){shift}", ids.len())
+        };
         if let Some(p) = problem {
             log::warn!("recording: {p}");
             self.ui.status = format!("{} ({p})", self.ui.status);

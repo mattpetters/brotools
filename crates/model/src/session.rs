@@ -2,8 +2,8 @@
 
 use crate::clip::{bound, bound_sequence};
 use crate::{
-    Bus, BusId, ChannelFormat, Clip, ClipId, Group, GroupId, MarkerId, MarkerKind, MemoryLocation, OutputPath, Source, SourceId, SourcePool,
-    TRACK_COLORS, Track, TrackId, TrackKind, VideoSource,
+    Bus, BusId, ChannelFormat, Clip, ClipId, Group, GroupId, InputPath, MarkerId, MarkerKind, MemoryLocation, OutputPath, Route, Source, SourceId,
+    SourcePool, TRACK_COLORS, Track, TrackId, TrackKind, VideoSource,
 };
 use soundcraft_time::{FrameRate, GridValue, Range, SampleRate, Samples, TempoMap, TimeFormat};
 
@@ -348,6 +348,10 @@ pub struct Session {
     #[serde(default)]
     pub videos: Vec<VideoSource>,
     pub busses: Vec<Bus>,
+    /// Named hardware inputs (I/O Setup). Empty on sessions saved before input paths existed;
+    /// those still resolve "In N" from the route name.
+    #[serde(default)]
+    pub inputs: Vec<InputPath>,
     pub outputs: Vec<OutputPath>,
     pub markers: Vec<MemoryLocation>,
     pub groups: Vec<Group>,
@@ -368,6 +372,52 @@ pub struct Session {
     /// The folder relative source paths point into: where the session was opened or last saved.
     #[serde(skip)]
     pub folder: Option<std::path::PathBuf>,
+}
+
+/// "In 3" / "Out 3-4" → 2. A name that does not start with `prefix` still parses a leading number.
+fn legacy_hardware_index(name: &str, prefix: &str) -> usize {
+    name.trim_start_matches(prefix).split(['-', ' ']).next().and_then(|n| n.parse::<usize>().ok()).map_or(0, |n| n.saturating_sub(1))
+}
+
+/// Like [`legacy_hardware_index`], but only when the name is an "Out N" style label.
+fn numbered_hardware_index(name: &str, prefix: &str) -> Option<usize> {
+    let rest = name.trim_start_matches(prefix);
+    let numbered = rest != name || rest.chars().next().is_some_and(|c| c.is_ascii_digit());
+    numbered.then(|| rest.split(['-', ' ']).next().and_then(|n| n.parse::<usize>().ok()).map_or(0, |n| n.saturating_sub(1)))
+}
+
+fn wrap_hw(channel: usize, device_channels: usize) -> usize {
+    if device_channels == 0 || channel == usize::MAX { channel } else { channel % device_channels }
+}
+
+fn map_path_channels(explicit: &[u16], active: bool, width: usize, device_channels: usize) -> Vec<usize> {
+    if width == 0 {
+        return Vec::new();
+    }
+    if !active {
+        return vec![usize::MAX; width];
+    }
+    (0..width)
+        .map(|k| {
+            let ch = explicit.get(k).copied().map(usize::from).unwrap_or_else(|| {
+                let base = explicit.last().copied().map(usize::from).unwrap_or(0);
+                let extra = k.saturating_add(1).saturating_sub(explicit.len());
+                base.saturating_add(extra)
+            });
+            wrap_hw(ch, device_channels)
+        })
+        .collect()
+}
+
+fn sanitize_io_path(name: &mut String, channels: &mut Vec<u16>, first: &mut u16) {
+    truncate_chars(name, MAX_NAME_CHARS);
+    channels.truncate(16);
+    channels.retain(|c| *c <= 1023);
+    if let Some(c) = channels.first().copied() {
+        *first = c;
+    } else if *first > 1023 {
+        *first = 1023;
+    }
 }
 
 impl Default for Session {
@@ -393,7 +443,12 @@ impl Session {
             sources: Vec::new(),
             videos: Vec::new(),
             busses: Vec::new(),
-            outputs: vec![OutputPath { name: "Out 1-2".into(), first_channel: 0, format: ChannelFormat::Stereo }],
+            inputs: vec![
+                InputPath::new("In 1-2", 0, ChannelFormat::Stereo),
+                InputPath::new("In 1", 0, ChannelFormat::Mono),
+                InputPath::new("In 2", 1, ChannelFormat::Mono),
+            ],
+            outputs: vec![OutputPath::new("Out 1-2", 0, ChannelFormat::Stereo)],
             markers: Vec::new(),
             groups: Vec::new(),
             auto_names: std::collections::BTreeMap::new(),
@@ -444,6 +499,49 @@ impl Session {
     }
     pub fn bus_by_name(&self, name: &str) -> Option<&Bus> {
         self.busses.iter().find(|b| b.name.eq_ignore_ascii_case(name))
+    }
+
+    pub fn input_by_name(&self, name: &str) -> Option<&InputPath> {
+        self.inputs.iter().find(|p| p.name.eq_ignore_ascii_case(name))
+    }
+
+    pub fn output_by_name(&self, name: &str) -> Option<&OutputPath> {
+        self.outputs.iter().find(|p| p.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Hardware input channels (0-based) a track of `width` channels records or monitors for
+    /// `route`. Named input paths win. "In 3" still means channel 3 (index 2) when no path has
+    /// that name. `device_channels` wraps the indices; 0 leaves them unwrapped. An inactive path
+    /// yields `usize::MAX` (silence) per channel.
+    pub fn hardware_input_channels(&self, route: &Route, width: usize, device_channels: usize) -> Vec<usize> {
+        let width = width.min(16);
+        let Route::Hardware(name) = route else {
+            return (0..width).map(|k| wrap_hw(k, device_channels)).collect();
+        };
+        if let Some(path) = self.input_by_name(name) {
+            return map_path_channels(&path.resolved_channels(), path.active, width, device_channels);
+        }
+        let first = legacy_hardware_index(name, "In ");
+        (0..width).map(|k| wrap_hw(first.saturating_add(k), device_channels)).collect()
+    }
+
+    /// Hardware output channels (0-based) a track of `width` channels plays for `route`.
+    /// An unknown name that is not "Out N" maps nowhere, so a bus name stored by mistake stays silent.
+    pub fn hardware_output_channels(&self, route: &Route, width: usize, device_channels: usize) -> Vec<usize> {
+        let width = width.min(16);
+        let Route::Hardware(name) = route else {
+            return Vec::new();
+        };
+        if let Some(path) = self.output_by_name(name) {
+            if !path.active {
+                return Vec::new();
+            }
+            return map_path_channels(&path.resolved_channels(), true, width, device_channels);
+        }
+        let Some(first) = numbered_hardware_index(name, "Out ") else {
+            return Vec::new();
+        };
+        (0..width).map(|k| wrap_hw(first.saturating_add(k), device_channels)).collect()
     }
     pub fn group(&self, id: GroupId) -> Option<&Group> {
         self.groups.iter().find(|g| g.id == id)
@@ -665,7 +763,12 @@ impl Session {
             truncate_chars(&mut v.name, MAX_NAME_CHARS);
         }
         self.busses.iter_mut().for_each(|b| truncate_chars(&mut b.name, MAX_NAME_CHARS));
-        self.outputs.iter_mut().for_each(|o| truncate_chars(&mut o.name, MAX_NAME_CHARS));
+        for p in &mut self.inputs {
+            sanitize_io_path(&mut p.name, &mut p.channels, &mut p.first_channel);
+        }
+        for p in &mut self.outputs {
+            sanitize_io_path(&mut p.name, &mut p.channels, &mut p.first_channel);
+        }
         self.groups.iter_mut().for_each(|g| truncate_chars(&mut g.name, MAX_NAME_CHARS));
         self.sources.iter_mut().for_each(|s| truncate_chars(&mut s.name, MAX_NAME_CHARS));
         // Drop performances whose clip no longer exists anywhere (any playlist).
@@ -903,6 +1006,25 @@ mod tests {
         assert_eq!(tr.active_playlist, 0);
         assert_eq!(tr.mixer.volume_db, 0.0);
         assert!(s.next_id > t.0);
+    }
+
+    #[test]
+    fn input_paths_map_channels_and_old_sessions_have_none() {
+        let mut s = Session::default();
+        assert_eq!(s.hardware_input_channels(&Route::Hardware("In 2".into()), 1, 8), vec![1]);
+        assert_eq!(s.hardware_input_channels(&Route::Hardware("In 3-4".into()), 2, 2), vec![0, 1]);
+        s.inputs.push(InputPath { name: "Guitar".into(), first_channel: 3, format: ChannelFormat::Mono, channels: vec![3], active: true });
+        assert_eq!(s.hardware_input_channels(&Route::Hardware("Guitar".into()), 1, 8), vec![3]);
+        s.inputs.last_mut().unwrap().active = false;
+        assert_eq!(s.hardware_input_channels(&Route::Hardware("Guitar".into()), 1, 8), vec![usize::MAX]);
+        s.outputs.push(OutputPath::new("Out 3-4", 2, ChannelFormat::Stereo));
+        assert_eq!(s.hardware_output_channels(&Route::Hardware("Out 3-4".into()), 2, 8), vec![2, 3]);
+        assert!(s.hardware_output_channels(&Route::Hardware("Hall".into()), 2, 8).is_empty());
+        let mut v = serde_json::to_value(&s).unwrap();
+        v.as_object_mut().unwrap().remove("inputs");
+        let old = Session::from_json(&v.to_string()).unwrap();
+        assert!(old.inputs.is_empty());
+        assert_eq!(old.hardware_input_channels(&Route::Hardware("In 2".into()), 1, 8), vec![1]);
     }
 
     #[test]
