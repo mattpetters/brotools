@@ -44,6 +44,9 @@ pub fn open_session(e: &mut Engine, path: impl AsRef<Path>) -> Result<Vec<String
 /// [`open_session`], following the media paths in it as if they were stored in the session file
 /// `links` (crash recovery: the session written beside the autosave, its paths from the original).
 pub(crate) fn open_session_linked(e: &mut Engine, path: &Path, links: &Path) -> Result<Vec<String>> {
+    if path.to_str().is_some_and(soundcraft_ptx::is_pro_tools_path) {
+        return super::ptx::open_pro_tools(e, path).map(|opened| opened.missing);
+    }
     let text = read_text(path)?;
     let mut s = Session::from_json(&text).map_err(|err| EngineError::Io(err.to_string()))?;
     let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();

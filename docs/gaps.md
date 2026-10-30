@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (G-02: MIDI devices; G-01: duplex clock and record offset) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (G-03: partial Pro Tools session read, on top of MIDI devices) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -17,7 +17,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** Duplex is two cpal streams on one device (no single callback); mix block stays 512; JACK and on-device verification still open | Hardware | [hardware-parity.md](hardware-parity.md) | 8–15 |
 | G-02 | MIDI devices: no hardware verification on macOS/Windows; no MTC chase, MMC or SysEx | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 8–15 |
-| G-03 | **Alpha blocker.** Cannot exchange sessions with Pro Tools (no AAF/OMF, no `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
+| G-03 | **Alpha blocker.** Cannot hand a session back to Pro Tools (no `.ptx` write, no AAF/OMF). `.ptx`/`.ptxt`/`.ptf` read is partial | File formats | [file-format-parity.md](file-format-parity.md) | 40–70 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 15–25 |
 | G-06 | (Playback streaming: alpha blocker for long sessions) Sources decoded whole into RAM. Recording already streams to disk | Performance | [hardware-parity.md](hardware-parity.md) | 10–20 |
@@ -88,13 +88,17 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 ### G-03. Session interchange with Pro Tools
 
-- **Missing:** opening or saving `.ptx`/`.ptf`, AAF and OMF import and export (#40), Media
-  Composer–compatible sessions. Our session format is `.scraft` JSON.
-- **Impact:** the standard's main-format bar for beta. A Pro Tools user cannot bring a project in
-  or hand one back; post-production (picture editors deliver AAF) is blocked.
-- **Estimate:** AAF/OMF import + export ≈ 50–90 h (FilmCraft already writes AAF/OMF; we can learn
-  from it but not share code). `.ptx` is proprietary and undocumented: owner decision on whether
-  black-box format study is in the clean-room rules; not included in the estimate.
+- **In:** opening `.ptx`, `.ptxt`, `.ptf`, and `.pts` into a session, with a fidelity report.
+  The reader is `soundcraft-ptx`, specified in [formats/ptx.md](formats/ptx.md). It restores
+  tracks (audio, MIDI, a basic folder tag), names and order, channel width, bus paths and a
+  per-track output name, plug-in name strings, memory locations, picture rate, sample rate,
+  clips, and audio file paths. Tempo, meter, bit depth, colors, sends, inputs, plug-in
+  parameters, fades, and aux/master/instrument as distinct kinds are reported and not restored.
+- **Missing:** saving `.ptx`/`.ptf`, AAF and OMF import and export (#40), Media Composer–compatible
+  sessions. Our session format is still `.scraft` JSON.
+- **Impact:** a Pro Tools user can bring a template or session in and see what was dropped. They
+  still cannot hand a session back, and picture editors still deliver AAF.
+- **Estimate:** AAF/OMF import + export, plus `.ptx` write, ≈ 40–70 h. `.ptx` write is not started.
 
 ### G-04. Correctness bugs in "done" features
 
@@ -250,6 +254,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | G-03: partial `.ptx`/`.ptxt`/`.ptf`/`.pts` read with a fidelity report. Write, AAF, and OMF remain; estimate 50–90 → 40–70 |
 | 2026-10-29 | major | G-02 shrunk: MIDI input and output, live play-through, recording, beat clock and MTC out. Hardware verification on macOS/Windows, chase, MMC and SysEx remain |
 | 2026-10-29 | minor | G-01: same-device duplex clock, named I/O paths, record offset, low-latency monitoring. G-06: record-to-disk was already in tree (#84); playback streaming remains |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |

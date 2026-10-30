@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** major (MIDI devices; audio I/O duplex clock and record offset) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (`.ptx` opens; MIDI devices already on main) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -28,7 +28,7 @@ main platform). Any **no** keeps SoundCraft **pre-alpha**, and those rows are th
 | Edit: select, trim, fade, comp playlists, Slip/Shuffle/Grid | yes (rough) | Every Edit menu command; property-tested with undo; open bugs #3, #5, #140 don't block the workflow | — |
 | Mix with built-in and third-party plugins, sends, busses, automation | partial (passes on CLAP/AU) | 27 built-in processors; CLAP and AU host on the signed macOS build, but its missing entitlement blocks third-party VST3 (#153). No AU plugin windows yet; VST3 windows on macOS only | 1–2 (entitlement) |
 | Bounce mix and stems; save and reopen the session | yes (rough) | WAV/BWF/AIFF/FLAC bounce, stems, `.scraft` save/reopen with plugin state; bugs #59, #103 in bus bounce and aux latency (PRs open) | — |
-| Exchange a session with Pro Tools or a picture editor | **no** | No `.ptx`, AAF or OMF import or export (#40, G-03) | 50–90 |
+| Exchange a session with Pro Tools or a picture editor | **no** | `.ptx`/`.ptxt`/`.ptf`/`.pts` open with a fidelity report. No `.ptx` write, AAF, or OMF (#40, G-03), so a session still cannot be handed back | 40–70 |
 
 **Result: pre-alpha.** Audio recording and session exchange still fail; MIDI recording is partial
 until a physical controller is confirmed on macOS. Passing them is ~100–160 h.
@@ -89,6 +89,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | Exchange row: `.ptx`/`.ptxt`/`.ptf`/`.pts` read with a fidelity report. The row stays no; estimate 50–90 → 40–70 because write, AAF, and OMF remain |
 | 2026-10-29 | major | MIDI devices: input, output, live play-through, recording, beat clock and MTC out. The record-from-a-controller gate row is partial |
 | 2026-10-29 | trivial | Alpha-gate evidence: same-device duplex, record offset and record-to-disk exist; the row stays no until hardware verification and a mix block that follows the device |
 | 2026-10-24 | trivial | 27 built-in processors, as the plugin registry holds; the sampler (#108) is no longer listed under plugin essentials |

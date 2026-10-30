@@ -12,11 +12,7 @@ use soundcraft_time::SampleRate;
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "session.new", "New...", ["File"], Some("Cmd+N"), "{name?: 'Untitled', sample_rate?: 48000, bit_depth?: 24, template?: blank|demo}", always, new_session),
-        cmd!(noundo "session.open", "Open Session...", ["File"], Some("Cmd+O"), "{path}", always, |e, p| {
-            let path = str_param(p, "path").ok_or_else(|| bad("session.open", "`path` required"))?.to_string();
-            let missing = crate::io::open_session(e, &path)?;
-            Ok(json!({"name": e.session().name, "tracks": e.session().tracks.len(), "missing": missing}))
-        }),
+        cmd!(noundo "session.open", "Open Session...", ["File"], Some("Cmd+O"), "{path} — .scraft, or a Pro Tools .ptx .ptxt .ptf .pts file", always, open_any),
         cmd!(noundo "session.close", "Close Session", ["File"], Some("Cmd+Shift+W"), "{}", always, |e, _| { e.replace_session(Session::default()); e.path = None; Ok(json!({})) }),
         cmd!(noundo "session.save", "Save Session", ["File"], Some("Cmd+S"), "{path?, replace?: false}", always, |e, p| {
             let path = str_param(p, "path").map(str::to_string).or_else(|| e.path.clone()).ok_or_else(|| bad("session.save", "no path yet: pass `path` (Save As)"))?;
@@ -65,6 +61,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{path | paths: [..], track?: target track, at?: position, new_tracks?: true (default; false uses `track` or the selected audio track)}",
             always,
             import_audio
+        ),
+        cmd!(
+            noundo "file.import_pro_tools",
+            "Pro Tools Session...",
+            ["File", "Import"],
+            None,
+            "{path} — .ptx, .ptxt, .ptf, or .pts; replaces the session and returns a fidelity report",
+            always,
+            import_pro_tools
         ),
         cmd!("file.import_midi", "MIDI...", ["File", "Import"], Some("Cmd+Alt+I"), "{path, at?}", always, |e, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("file.import_midi", "`path` required"))?.to_string();
@@ -206,6 +211,22 @@ fn refuse_replacing(e: &Engine, id: &str, file: &std::path::Path, p: &Value) -> 
         return Err(bad(id, format!("{} already exists: pass `replace: true` to replace it", file.display())));
     }
     Ok(())
+}
+
+fn open_any(e: &mut Engine, p: &Value) -> Result<Value> {
+    let path = str_param(p, "path").ok_or_else(|| bad("session.open", "`path` required"))?.to_string();
+    if soundcraft_ptx::is_pro_tools_path(&path) {
+        let opened = crate::io::open_pro_tools(e, std::path::Path::new(&path))?;
+        return Ok(opened.to_json(&e.session().name, e.session().tracks.len()));
+    }
+    let missing = crate::io::open_session(e, &path)?;
+    Ok(json!({"name": e.session().name, "tracks": e.session().tracks.len(), "missing": missing}))
+}
+
+fn import_pro_tools(e: &mut Engine, p: &Value) -> Result<Value> {
+    let path = str_param(p, "path").ok_or_else(|| bad("file.import_pro_tools", "`path` required"))?.to_string();
+    let opened = crate::io::open_pro_tools(e, std::path::Path::new(&path))?;
+    Ok(opened.to_json(&e.session().name, e.session().tracks.len()))
 }
 
 fn new_session(e: &mut Engine, p: &Value) -> Result<Value> {
