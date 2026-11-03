@@ -143,6 +143,9 @@ mod api {
     pub fn set_extra_dirs(dirs: Vec<PathBuf>) {
         registry::set_extra_dirs(dirs)
     }
+    pub fn use_system_dirs(on: bool) {
+        registry::use_system_dirs(on)
+    }
     pub fn problems() -> Vec<(PathBuf, String)> {
         registry::problems()
     }
@@ -201,6 +204,7 @@ mod api {
         (Vec::new(), Vec::new())
     }
     pub fn set_extra_dirs(_dirs: Vec<PathBuf>) {}
+    pub fn use_system_dirs(_on: bool) {}
     pub fn problems() -> Vec<(PathBuf, String)> {
         Vec::new()
     }
@@ -279,6 +283,12 @@ pub fn search_dirs() -> (Vec<PathBuf>, Vec<PathBuf>) {
 /// Replaces the folders scanned besides the standard ones. Takes effect at the next scan.
 pub fn set_extra_dirs(dirs: Vec<PathBuf>) {
     api::set_extra_dirs(dirs)
+}
+
+/// `false`: scans skip the standard folders and `VST3_PATH`, and look only in the extra ones. For
+/// tests, which must not load the plugins installed on the machine. Takes effect at the next scan.
+pub fn use_system_dirs(on: bool) {
+    api::use_system_dirs(on)
 }
 
 /// The plugin files the last scan could not load, with the reason. They are not loaded again
@@ -406,6 +416,8 @@ mod tests {
 
     #[test]
     fn garbage_files_are_errors_not_crashes() {
+        // `create` below scans; the machine's own plugins must not load into the test.
+        use_system_dirs(false);
         let d = std::env::temp_dir().join(format!("soundcraft-vst3-garbage-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let arch = if cfg!(target_os = "macos") {

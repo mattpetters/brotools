@@ -94,6 +94,8 @@ pub struct MidiHub {
     out_tx: Option<Sender<OutCmd>>,
     out_thread: Option<std::thread::JoinHandle<()>>,
     last_scan: Option<Instant>,
+    /// Device lists from the background scan that [`MidiHub::poll`] started.
+    scan: Option<Receiver<(Vec<String>, Vec<String>)>>,
     failed_in: Vec<(String, String)>,
     failed_out: Vec<(String, String)>,
 }
@@ -141,6 +143,7 @@ impl MidiHub {
             out_tx,
             out_thread,
             last_scan: None,
+            scan: None,
             failed_in: Vec::new(),
             failed_out: Vec::new(),
         }
@@ -158,29 +161,53 @@ impl MidiHub {
         &self.listed_out
     }
 
-    /// Re-scan devices at most once a second and open whatever the session has enabled.
+    /// Re-scan devices at most once a second and open whatever the session has enabled. Listing
+    /// runs on a short-lived thread (the first CoreMIDI list takes ~20 ms), so a UI frame never
+    /// waits on the driver; the result is applied on a later poll.
     pub fn poll(&mut self, session: &Session) {
+        if let Some(rx) = &self.scan {
+            match rx.try_recv() {
+                Ok((ins, outs)) => {
+                    self.scan = None;
+                    self.apply(session, &ins, &outs);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.scan = None,
+            }
+        }
         let due = self.last_scan.is_none_or(|t| t.elapsed() >= Duration::from_secs(1));
-        if due {
-            self.refresh(session);
+        if !due || !platform::MIDI {
+            return;
+        }
+        self.last_scan = Some(Instant::now());
+        let (tx, rx) = channel();
+        let spawned = std::thread::Builder::new().name("midi-scan".into()).spawn(move || {
+            let _ = tx.send((list_inputs(), list_outputs()));
+        });
+        match spawned {
+            Ok(_) => self.scan = Some(rx),
+            Err(e) => log::warn!("MIDI scan thread: {e}"),
         }
     }
 
+    /// Re-scan now, on this thread. For the Setup window, where the user asked for it.
     pub fn refresh(&mut self, session: &Session) {
         self.last_scan = Some(Instant::now());
         if !platform::MIDI {
             return;
         }
-        let available_in = list_inputs();
-        let available_out = list_outputs();
-        let want_in = wanted(session, "midi.input.", &available_in);
-        let want_out = wanted(session, "midi.output.", &available_out);
+        self.apply(session, &list_inputs(), &list_outputs());
+    }
+
+    fn apply(&mut self, session: &Session, available_in: &[String], available_out: &[String]) {
+        let want_in = wanted(session, "midi.input.", available_in);
+        let want_out = wanted(session, "midi.output.", available_out);
         self.sync_inputs(&want_in);
         if let Some(tx) = &self.out_tx {
             let _ = tx.send(OutCmd::Set(want_out.clone()));
         }
-        self.listed_in = self.describe(&available_in, &want_in, true);
-        self.listed_out = describe_out(&available_out, &want_out, &self.failed_out);
+        self.listed_in = self.describe(available_in, &want_in, true);
+        self.listed_out = describe_out(available_out, &want_out, &self.failed_out);
     }
 
     /// Push one message as if a device had sent it. `port` [`ALL_PORTS`] matches every track that

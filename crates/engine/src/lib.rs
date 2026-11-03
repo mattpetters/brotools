@@ -42,6 +42,28 @@ pub fn shutdown_plugin_hosts() {
     soundcraft_vst3_host::shutdown();
 }
 
+/// Scans load each VST3 and CLAP file in a child process: `program` run with
+/// [`plugin_scan_child`]'s arguments, so a plugin that crashes or aborts while loading ends only
+/// that child. `None` loads files in this process.
+pub fn set_plugin_scanner(program: Option<std::path::PathBuf>) {
+    soundcraft_vst3_host::set_scanner(program.clone());
+    soundcraft_clap_host::set_scanner(program);
+}
+
+/// The scan child's work: with `<flag> <file>` arguments (see [`set_plugin_scanner`]), loads that
+/// one plugin file and returns the line to print; `None` for any other arguments.
+pub fn plugin_scan_child(args: &[std::ffi::OsString]) -> Option<String> {
+    let [flag, file] = args else { return None };
+    let file = std::path::Path::new(file);
+    if flag == soundcraft_vst3_host::SCAN_FLAG {
+        Some(soundcraft_vst3_host::scan_reply(file))
+    } else if flag == soundcraft_clap_host::SCAN_FLAG {
+        Some(soundcraft_clap_host::scan_reply(file))
+    } else {
+        None
+    }
+}
+
 /// A new [`soundcraft_model::AutoName::id`] for a scheme in `s`: a hash of a counter, never 0 and
 /// not held by another scheme in `s`. Native builds seed the hash from the system, so each run of
 /// the app gives other ids.
@@ -218,6 +240,10 @@ impl Default for Engine {
 impl Engine {
     pub fn new(session: Session) -> Self {
         install_panic_hook();
+        // Unit tests never load the machine's installed plugins: a scan "child" that cannot start
+        // records each file as unloadable, where an in-process load can abort the test binary.
+        #[cfg(test)]
+        set_plugin_scanner(Some(std::path::PathBuf::from("/nonexistent/soundcraft-test-scanner")));
         let doc = Arc::new(session);
         Engine {
             saved: Arc::clone(&doc),
