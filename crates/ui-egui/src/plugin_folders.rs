@@ -92,31 +92,16 @@ impl Format {
 /// At launch: remembers scans in `settings_dir` (when there is one), adds the user's folders and
 /// starts scanning on a background thread, so that the plugin menus are ready when first opened.
 /// Plugin files are loaded for the scan by `scanner` (this app's own program, run with
-/// [`scan_child`]'s arguments) in a child process, never in the app.
+/// [`soundcraft_engine::plugin_scan_child`]'s arguments) in a child process, never in the app.
 pub fn start(dirs: &PluginDirs, settings_dir: Option<&Path>, scanner: Option<PathBuf>) {
     Format::Vst3.set_extra_dirs(&dirs.vst3);
     Format::Clap.set_extra_dirs(&dirs.clap);
-    soundcraft_vst3_host::set_scanner(scanner.clone());
-    soundcraft_clap_host::set_scanner(scanner);
+    soundcraft_engine::set_plugin_scanner(scanner);
     if let Some(dir) = settings_dir {
         soundcraft_vst3_host::set_cache_file(Some(dir.join("plugins-vst3.json")));
         soundcraft_clap_host::set_cache_file(Some(dir.join("plugins-clap.json")));
         soundcraft_vst3_host::scan_in_background();
         soundcraft_clap_host::scan_in_background();
-    }
-}
-
-/// The scan child process's work: with `<flag> <file>` arguments (see [`start`]), loads that one
-/// plugin file and returns the line to print; `None` for any other arguments.
-pub fn scan_child(args: &[std::ffi::OsString]) -> Option<String> {
-    let [flag, file] = args else { return None };
-    let file = Path::new(file);
-    if flag == soundcraft_vst3_host::SCAN_FLAG {
-        Some(soundcraft_vst3_host::scan_reply(file))
-    } else if flag == soundcraft_clap_host::SCAN_FLAG {
-        Some(soundcraft_clap_host::scan_reply(file))
-    } else {
-        None
     }
 }
 
