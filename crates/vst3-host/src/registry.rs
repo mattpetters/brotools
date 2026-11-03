@@ -21,6 +21,8 @@ struct Registry {
     /// can be created without waiting for the scan.
     remembered: Vec<Vst3Descriptor>,
     extra_dirs: Vec<PathBuf>,
+    /// Set by [`use_system_dirs`]`(false)`: scans skip the standard folders.
+    no_system_dirs: bool,
     /// Where scans are remembered across runs (see [`scan_cache`]); `None` keeps them in memory only.
     cache_file: Option<PathBuf>,
     /// The program that loads files for scans in a child process (see [`set_scanner`]).
@@ -110,7 +112,7 @@ fn merge(files: Vec<scan_cache::Entry<Vst3Descriptor>>) -> Vec<Vst3Descriptor> {
 fn scan_now(reuse: bool) -> Vec<Vst3Descriptor> {
     let (dirs, cache_file, scanner) = {
         let r = lock();
-        let mut dirs = paths::default_search_paths();
+        let mut dirs = if r.no_system_dirs { Vec::new() } else { paths::default_search_paths() };
         dirs.extend(r.extra_dirs.iter().cloned());
         (dirs, r.cache_file.clone(), r.scanner.clone())
     };
@@ -213,6 +215,10 @@ pub fn search_dirs() -> (Vec<PathBuf>, Vec<PathBuf>) {
 
 pub fn set_extra_dirs(dirs: Vec<PathBuf>) {
     lock().extra_dirs = dirs;
+}
+
+pub fn use_system_dirs(on: bool) {
+    lock().no_system_dirs = !on;
 }
 
 /// The argument that makes the scan program load one file: `<program> --scan-vst3 <file>`.

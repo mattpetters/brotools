@@ -11,6 +11,10 @@ pub fn fixture_dir() -> &'static Path {
     DIR.get_or_init(|| {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture/Cargo.toml");
         let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("vst3-fixture-target");
+        // Test processes run in parallel and each builds the fixture: cargo re-links the library
+        // even when it is fresh, so build and copy under one lock or a copy finds no file.
+        let lock = std::fs::File::create(target.with_extension("lock")).unwrap();
+        lock.lock().unwrap();
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let st = Command::new(cargo)
             .args(["build", "--quiet", "--manifest-path"])
@@ -35,6 +39,8 @@ pub fn fixture_dir() -> &'static Path {
         let bin = dir.join("vendor/Fixture.vst3/Contents").join(folder);
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::copy(&built, bin.join(exe)).unwrap();
+        // Only the fixture: the machine's installed plugins must not load into the tests.
+        soundcraft_vst3_host::use_system_dirs(false);
         assert_eq!(soundcraft_vst3_host::add_search_dir(&dir), 6);
         dir
     })

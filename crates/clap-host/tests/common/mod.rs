@@ -11,6 +11,10 @@ pub fn fixture_dir() -> &'static Path {
     DIR.get_or_init(|| {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../clap-host/tests/fixture/Cargo.toml");
         let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("clap-fixture-target");
+        // Test processes run in parallel and each builds the fixture: cargo re-links the library
+        // even when it is fresh, so build and copy under one lock or a copy finds no file.
+        let lock = std::fs::File::create(target.with_extension("lock")).unwrap();
+        lock.lock().unwrap();
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let st = Command::new(cargo)
             .args(["build", "--quiet", "--manifest-path"])
