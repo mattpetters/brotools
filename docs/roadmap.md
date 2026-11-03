@@ -18,8 +18,7 @@ Hours are Opus 5.5 agent-hours.
 ## Alpha gate
 
 The core workflows a Pro Tools professional does every day, checked end to end on macOS (the
-main platform). Any **no** keeps SoundCraft **pre-alpha**, and those rows are the alpha checklist
-(craftrules `standards/progress-docs.md`, Stages).
+main platform). Any **no** keeps SoundCraft **pre-alpha**, and those rows are the alpha checklist.
 
 | Workflow | Works end to end? | Evidence | Hours to pass |
 |---|---|---|---:|
@@ -92,6 +91,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 | 2026-10-29 | minor | Exchange row: `.ptx`/`.ptxt`/`.ptf`/`.pts` read with a fidelity report. The row stays no; estimate 50–90 → 40–70 because write, AAF, and OMF remain |
 | 2026-10-29 | major | MIDI devices: input, output, live play-through, recording, beat clock and MTC out. The record-from-a-controller gate row is partial |
 | 2026-10-29 | trivial | Alpha-gate evidence: same-device duplex, record offset and record-to-disk exist; the row stays no until hardware verification and a mix block that follows the device |
+| 2026-10-25 | trivial | Record-workflow evidence: `setup.playback_engine` applies the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | 27 built-in processors, as the plugin registry holds; the sampler (#108) is no longer listed under plugin essentials |
 | 2026-10-14 | trivial | M8: reject oversized MCP batches before execution (#460) |
 | 2026-10-10 | minor | Added the alpha gate (3 of 6 core workflows fail → pre-alpha) |

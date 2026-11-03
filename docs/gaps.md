@@ -55,12 +55,17 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   `track.output`. Low Latency Monitoring bypasses inserts and plugin-delay alignment on tracks
   that are hearing their input, and the monitor ring drops a stale backlog instead of playing it
   late. Builds on upstream PRs #575 (I/O paths), #808 (backlog trim) and #206 (monitor bypass).
+- **Done (2026-10-25):** `setup.playback_engine` and `setup.hardware` apply `device` (the output
+  name) and `buffer_size` in the desktop app on the same path as the Playback Engine window
+  (`ui.audio_device`) and return the open device. `buffer_size` is any integer 16..=8192 and is
+  not rounded onto the window's power-of-two list. Headless (CLI, no app) still stores the request
+  and returns `applied: false`, with `buffer_size` null when unset; playback does not read those
+  session values.
 - **Missing:** one OS duplex callback (cpal does not offer one), JACK/PipeWire (#491), a mix block
   that follows the device buffer (#1034; still 512), the Pro Tools channel-grid window and
   automatic sub-paths from #575, master-fader processing on hardware output paths, ASIO in
   official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), and verification on
-  real interfaces. `setup.playback_engine` still stores `device`/`buffer_size` in the session;
-  the app applies the device through `ui.audio_device`.
+  real interfaces.
 - **Evidence:** code above; Playback Engine window says "Mix block size: 512 samples"; issue #42
   (no input device selection, forced monitoring feedback with virtual routing).
 - **Impact:** blocks tracking with any multichannel interface; latency makes overdubs hard.
@@ -258,6 +263,7 @@ missing. Out of scope unless the owner decides otherwise.
 | 2026-10-29 | major | G-02 shrunk: MIDI input and output, live play-through, recording, beat clock and MTC out. Hardware verification on macOS/Windows, chase, MMC and SysEx remain |
 | 2026-10-29 | minor | G-01: same-device duplex clock, named I/O paths, record offset, low-latency monitoring. G-06: record-to-disk was already in tree (#84); playback streaming remains |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
+| 2026-10-25 | trivial | G-01: `setup.playback_engine` and `setup.hardware` apply the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |
 | 2026-10-19 | trivial | G-04: Float32 encoding retains finite headroom (#791); integer clipping and non-finite handling retained |
 | 2026-10-18 | trivial | G-04: mono device stereo/surround fold-down fixed and regression-tested; estimates unchanged |

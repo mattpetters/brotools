@@ -615,6 +615,7 @@ fn copy_new(from: &Path, to: &Path) -> std::io::Result<()> {
     let mut src = std::fs::File::open(from)?;
     let mut dst = std::fs::OpenOptions::new().write(true).create_new(true).open(to)?;
     if let Err(err) = std::io::copy(&mut src, &mut dst) {
+        #[cfg(not(target_arch = "wasm32"))]
         drop(dst);
         let _ = std::fs::remove_file(to);
         return Err(err);
@@ -749,6 +750,12 @@ fn read_bundle(bytes: &[u8], limits: BundleLimits) -> Result<(String, std::colle
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(zerr)?;
     if z.len() > limits.entries {
         return Err(EngineError::Io("bundle: too many files".into()));
+    }
+    // Entries are stored, so the files we keep can only outgrow the bundle when several entries
+    // point at the same bytes: a small bundle naming one payload thousands of times would be
+    // copied out once per name.
+    if z.has_overlapping_files().map_err(zerr)? {
+        return Err(EngineError::Io("bundle: files share data".into()));
     }
     let (mut text, mut files, mut total) = (None, std::collections::HashMap::new(), 0u64);
     for i in 0..z.len() {
