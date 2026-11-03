@@ -21,6 +21,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | Live waveform fade preview | ✅ | Waveform amplitude updates during fade-length and midpoint-curvature drags, sharing the curve's temporary envelope. Mono/stereo, waveform styles, zoom and clip gain remain effective; release preserves the displayed waveform with one undo step and cached peaks |
 | Edit modes: Shuffle, Slip, Spot, Grid (absolute/relative) | ✅ | Spot dialog present |
 | Grid and nudge values, all timebases | ✅ | Bars/Beats, Min:Secs, Timecode, Feet+Frames, Samples |
+| Zoom Toggle | 🟡 | E (Commands focus) and the button zoom to the edit selection with Fit To Window heights and back; Alt+Shift+E and Alt-click cancel it and keep the view. The Zoom Toggle preferences (Vertical Zoom, Horizontal Zoom, Track Height, Track View, Separate Grid Settings When Zoomed In, Zoom Toggle Follows Edit Selection, Remove Range Selection After Zooming In) are not present |
 | Keyboard focus modes (Commands, Clip List, Groups) | 🟡 | Commands focus single-key editing ✅; list focus partial |
 | Link timeline/edit, link track/edit, Tab to transient, insertion follows playback | ✅ | |
 | Mirrored MIDI, MIDI merge, layered editing | 🟡 | Stored and partly honoured |
@@ -70,6 +71,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-29 | trivial | I/O Setup lists input paths, channel numbers and the record offset. Readiness estimate unchanged |
+| 2026-10-25 | minor | Zoom Toggle row: Alt+Shift+E and Alt-click cancel Zoom Toggle and keep the view. Readiness estimate unchanged |
 | 2026-10-25 | minor | Edit and Mix windows: Tracks and Groups and Clips in full-height dock columns. Readiness estimate unchanged |
 | 2026-10-16 | minor | Track name menu: Scroll Into View brings the track to the top of the Edit window and the left of the Mix. Readiness estimate unchanged |
 | 2026-10-13 | minor | A plugin opens when it's inserted (#486) |
